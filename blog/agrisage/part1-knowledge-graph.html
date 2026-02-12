@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building AgriSage: From Thesis to Agriculture — Graph-Based Knowledge Retrieval (Part 1) — AgriSage Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building AgriSage: From Thesis to Agriculture &mdash; Graph-Based Knowledge Retrieval (Part 1)</h1>
+        <p class="meta">AgriSage Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series on building AgriSage, a graph-native RAG system for agricultural knowledge retrieval. <a href="part2-rag-pipeline.html">Part 2</a> covers the RAG pipeline and retrieval strategy. <a href="part3-conversational.html">Part 3</a> covers the conversational interface and evaluation.</em></p>
+
+        <hr>
+
+        <h2>Introduction</h2>
+
+        <p>When a farmer asks, "What is the recommended dosage for copper fungicide to treat late blight on tomatoes during flowering?", the answer is not sitting in a single paragraph. It lives across a chain of connections: the crop (tomato) is <em>susceptible to</em> a disease (late blight), which is <em>treated by</em> a chemical (copper fungicide), which <em>has parameters</em> (dosage: 1.5-3.0 kg/ha), and the crop <em>has a growth stage</em> (flowering) that <em>requires treatment</em> (copper fungicide). That chain spans four hops across five entity types.</p>
+
+        <p>Vector search -- the default retrieval approach in most RAG systems -- cannot reliably traverse that chain. It embeds text chunks as dense vectors and retrieves the top-k most similar. For single-hop factoid questions this works well. For multi-hop reasoning over structured relationships, it falls apart: it retrieves fragments that are semantically close to the query but disconnected from each other. The dosage might come from one chunk, the disease name from another, and the growth stage context from a third, with no guarantee that they refer to the same treatment protocol.</p>
+
+        <p>AgriSage was built to solve this problem. It applies <strong>graph-native RAG</strong> to agricultural knowledge, storing entities and their relationships in a Neo4j knowledge graph and retrieving answers through explicit graph traversal rather than vector similarity. The core insight is simple: when your data has structure, your retrieval should respect that structure.</p>
+
+        <p>This project directly bridges my Master's thesis work, where I developed a graph-native RAG system for multi-hop reasoning over scientific workflow provenance and achieved <strong>91.67% accuracy</strong> on complex multi-hop questions. AgriSage takes that architecture -- ReAct-based query decomposition, schema-aware Cypher generation, and hybrid graph+vector retrieval -- and adapts it to the agricultural domain, where structured relationships between crops, pests, diseases, and treatments are central to practical decision-making.</p>
+
+        <hr>
+
+        <h2>Why Graph-Native Retrieval Matters for Agriculture</h2>
+
+        <p>Agricultural knowledge is inherently relational. Consider the following question types that a farmer or agronomist might ask:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Question Type</th>
+              <th>Required Reasoning Path</th>
+              <th>Hops</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>"What pests affect tomatoes?"</td>
+              <td>Crop -&gt; Pest</td>
+              <td>1</td>
+            </tr>
+            <tr>
+              <td>"What treatments exist for late blight?"</td>
+              <td>Disease -&gt; Treatment</td>
+              <td>1</td>
+            </tr>
+            <tr>
+              <td>"How do I treat late blight on tomatoes?"</td>
+              <td>Crop -&gt; Disease -&gt; Treatment</td>
+              <td>2</td>
+            </tr>
+            <tr>
+              <td>"What is the dosage for treating late blight on tomatoes?"</td>
+              <td>Crop -&gt; Disease -&gt; Treatment -&gt; Parameter</td>
+              <td>3</td>
+            </tr>
+            <tr>
+              <td>"What treatments should I apply to tomatoes during flowering?"</td>
+              <td>Crop -&gt; GrowthStage -&gt; Treatment -&gt; Parameter</td>
+              <td>3</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Single-hop questions (1 hop) are well-served by vector search: you embed the question, find the closest chunk, and extract the answer. But the questions farmers actually ask in practice tend to be multi-hop (2-4 hops). They want actionable advice that combines crop identity, threat identification, treatment selection, and dosage parameters in a single coherent answer.</p>
+
+        <p>A knowledge graph encodes these relationships explicitly. Instead of hoping that the right chunks land near each other in embedding space, we can traverse a precise path from crop to disease to treatment to dosage. The graph guarantees that the relationships we follow are real -- not hallucinated by an LLM or inferred by vector proximity.</p>
+
+        <p>This is the same insight that drove my thesis work on scientific workflow provenance: when multi-hop reasoning is required, graph-native retrieval consistently outperforms vector-only approaches because it operates on the actual structure of the data rather than a lossy projection into embedding space.</p>
+
+        <hr>
+
+        <h2>System Architecture</h2>
+
+        <p>The following diagram shows the end-to-end architecture of AgriSage, from document ingestion to query response:</p>
+
+        <p>The architecture has four major subsystems:</p>
+
+        <ol>
+          <li><strong>Ingestion Pipeline</strong>: Loads agricultural documents, chunks them intelligently, extracts entities and relationships, and builds the knowledge graph.</li>
+          <li><strong>Dual Storage</strong>: Neo4j for structured graph data (primary) and ChromaDB for vector embeddings (fallback).</li>
+          <li><strong>Query Pipeline</strong>: Decomposes complex questions, generates Cypher queries, retrieves from the graph, and falls back to vector search when needed.</li>
+          <li><strong>Conversational Interface</strong>: Manages multi-turn sessions and serves responses through FastAPI and Streamlit.</li>
+        </ol>
+
+        <hr>
+
+        <h2>Knowledge Graph Schema Design</h2>
+
+        <p>The schema is the backbone of AgriSage. Every design decision here directly affects what questions the system can answer and how accurately it can answer them. Here is the full schema:</p>
+
+        <p>The schema is defined in Python using enums and dataclasses, which keeps the schema definition in one place and makes it available to every component in the system:</p>
+
+<pre><code class="language-python">class NodeLabel(str, Enum):
+    CROP = "Crop"
+    PEST = "Pest"
+    DISEASE = "Disease"
+    TREATMENT = "Treatment"
+    GROWTH_STAGE = "GrowthStage"
+    PARAMETER = "Parameter"
+    DOCUMENT = "Document"
+
+class RelationType(str, Enum):
+    SUSCEPTIBLE_TO = "SUSCEPTIBLE_TO"
+    TREATED_BY = "TREATED_BY"
+    HAS_PARAMETER = "HAS_PARAMETER"
+    HAS_STAGE = "HAS_STAGE"
+    REQUIRES_TREATMENT = "REQUIRES_TREATMENT"
+    DESCRIBES = "DESCRIBES"
+    CONTRAINDICATED_WITH = "CONTRAINDICATED_WITH"</code></pre>
+
+        <h3>Design Rationale</h3>
+
+        <p>Several deliberate choices shaped this schema:</p>
+
+        <p><strong>Separating Pest and Disease nodes.</strong> Although both are "threats" to crops, they have different properties (insects vs. fungal pathogens), different treatment families (insecticides vs. fungicides), and different monitoring strategies. Keeping them as distinct node types means Cypher queries can target specific threat categories without filtering.</p>
+
+        <p><strong>Parameters as first-class nodes.</strong> Dosages, application intervals, and pre-harvest intervals are not mere properties of a Treatment node. They vary by crop context, growth stage, and regulatory region. By modeling them as separate <code>Parameter</code> nodes connected via <code>HAS_PARAMETER</code>, the same treatment can have different dosage parameters for different contexts, and we can query parameters independently.</p>
+
+        <p><strong>Growth stages linked to treatments.</strong> The <code>REQUIRES_TREATMENT</code> relationship between <code>GrowthStage</code> and <code>Treatment</code> captures the temporal dimension of crop protection: certain treatments are only appropriate during specific growth phases. This enables questions like "When should I apply copper fungicide to tomatoes?" to be answered through direct graph traversal.</p>
+
+        <p><strong>Document provenance.</strong> Every entity can be traced back to its source via <code>DESCRIBES</code> relationships from <code>Document</code> nodes. This supports source citations in responses and enables users to verify the information AgriSage provides.</p>
+
+        <p><strong>Contraindication modeling.</strong> The <code>CONTRAINDICATED_WITH</code> relationship between treatments captures chemical incompatibilities -- critical safety information that would be extremely difficult to retrieve reliably through vector search alone.</p>
+
+        <hr>
+
+        <h2>Document Ingestion Pipeline</h2>
+
+        <p>The ingestion pipeline transforms unstructured agricultural documents into the structured knowledge graph. It proceeds in four stages.</p>
+
+        <h3>Stage 1: Document Loading</h3>
+
+        <p>The <code>DocumentLoader</code> supports PDF, Markdown, plain text, and DOCX formats. It recursively scans a directory and loads each supported file with its metadata:</p>
+
+<pre><code class="language-python">class DocumentLoader:
+    SUPPORTED = {".txt", ".md", ".pdf", ".docx"}
+
+    def load_directory(self, path: str | Path) -&gt; list[Document]:
+        path = Path(path)
+        docs: list[Document] = []
+        for file_path in sorted(path.rglob("*")):
+            if file_path.suffix.lower() in self.SUPPORTED:
+                doc = self.load_file(file_path)
+                docs.append(doc)
+        return docs</code></pre>
+
+        <p>Each loaded document carries metadata (filename, format, file size) and the full text content, packaged in a <code>Document</code> dataclass.</p>
+
+        <h3>Stage 2: Section-Aware Chunking</h3>
+
+        <p>Raw text is split into chunks using a section-aware strategy. The <code>DocumentChunker</code> first splits on markdown headers to preserve section boundaries, then subdivides oversized sections into overlapping chunks that break at sentence boundaries:</p>
+
+<pre><code class="language-python">class DocumentChunker:
+    def __init__(self, chunk_size: int = 800, chunk_overlap: int = 100):
+        self.chunk_size = chunk_size
+        self.chunk_overlap = chunk_overlap
+
+    def chunk_by_sections(self, text: str, source: str = "") -&gt; list[Chunk]:
+        sections = re.split(r"\n(?=#{1,3}\s)", text)
+        chunks: list[Chunk] = []
+        for section in sections:
+            if len(section) &lt;= self.chunk_size:
+                chunks.append(Chunk(section, len(chunks), source, ...))
+            else:
+                sub_chunks = self.chunk_by_size(section, source)
+                chunks.extend(sub_chunks)
+        return chunks</code></pre>
+
+        <p>The 800-token chunk size and 100-token overlap were chosen to balance entity extraction accuracy (larger chunks provide more context) with granularity (smaller chunks reduce noise). Section-aware splitting ensures that a chunk about "Late Blight Treatment" does not bleed into a section about "Powdery Mildew Prevention."</p>
+
+        <h3>Stage 3: Entity Extraction</h3>
+
+        <p>Each chunk passes through a dual extraction strategy: LLM-based extraction when available, with regex-based fallback. The LLM extractor prompts a model to return structured JSON with crops, pests, diseases, treatments, parameters, and relationships. The regex extractor matches against curated lists of known agricultural entities:</p>
+
+<pre><code class="language-python">KNOWN_DISEASES = [
+    "late blight", "powdery mildew", "downy mildew", "fusarium wilt",
+    "botrytis", "gray mold", "rice blast", "corn smut", "apple scab",
+    "bacterial wilt", "rust", "anthracnose", "root rot", "leaf spot",
+]
+
+def extract_entities_regex(text: str) -&gt; dict[str, list[str]]:
+    text_lower = text.lower()
+    entities = {"crops": [], "pests": [], "diseases": [], "treatments": []}
+    for disease in KNOWN_DISEASES:
+        if disease in text_lower:
+            entities["diseases"].append(disease.title())
+    return entities</code></pre>
+
+        <p>A separate <code>extract_parameters_from_text</code> function uses specialized regex patterns to pull out dosages, application intervals, and pre-harvest intervals -- the quantitative details that make agricultural advice actionable.</p>
+
+        <h3>Stage 4: Graph Building</h3>
+
+        <p>The <code>GraphBuilder</code> orchestrates the full pipeline and loads extracted entities into Neo4j. It processes each document by chunking, extracting entities from each chunk, and creating the corresponding nodes and relationships:</p>
+
+<pre><code class="language-python">class GraphBuilder:
+    def process_document(self, document: Document) -&gt; dict[str, int]:
+        chunks = self.chunker.chunk_by_sections(document.content, source=document.source_path)
+        self.loader.load_document({"title": document.metadata.get("filename", "Unknown"), ...})
+
+        for chunk in chunks:
+            entities = extract_entities_llm(chunk.text, self.llm_client)
+            for crop_name in entities.get("crops", []):
+                self.loader.load_crop({"name": crop_name})
+            for pest_name in entities.get("pests", []):
+                self.loader.load_pest(
+                    {"name": pest_name, "type": "insect", "severity": "medium"},
+                    affected_crops=entities.get("crops", []),
+                )
+            # ... diseases, treatments, parameters
+        return counts</code></pre>
+
+        <p>The loader uses <code>MERGE</code> operations in Neo4j, ensuring that duplicate entities from overlapping chunks are deduplicated rather than duplicated. Relationships are created between co-occurring entities within the same chunk, capturing the implicit connections in the source text.</p>
+
+        <hr>
+
+        <h2>From Thesis to Agriculture: The Bridge</h2>
+
+        <p>My Master's thesis addressed a parallel problem in a different domain: multi-hop reasoning over scientific workflow provenance. Scientific workflows produce complex provenance graphs where data products, processing steps, software versions, and configuration parameters form deeply connected chains. Answering questions like "Which version of the calibration software produced this anomalous output?" requires traversing 3-4 hops through the provenance graph.</p>
+
+        <p>The thesis system achieved <strong>91.67% accuracy</strong> on a benchmark of multi-hop provenance questions using three key techniques:</p>
+
+        <ol>
+          <li><strong>ReAct-based query decomposition</strong> to break complex questions into dependency-ordered sub-questions.</li>
+          <li><strong>Schema-aware Cypher generation</strong> to translate sub-questions into precise graph queries.</li>
+          <li><strong>Hybrid graph+vector retrieval</strong> to handle both structured and unstructured aspects of the knowledge base.</li>
+        </ol>
+
+        <p>AgriSage adapts all three techniques to agriculture. The domain changes -- from provenance entities (DataProduct, ProcessingStep, Software) to agricultural entities (Crop, Pest, Treatment) -- but the reasoning patterns are structurally identical. A provenance chain like <code>DataProduct -&gt; ProcessingStep -&gt; Software -&gt; ConfigParameter</code> maps directly to an agricultural chain like <code>Crop -&gt; Disease -&gt; Treatment -&gt; Parameter</code>. Both require the same kind of multi-hop graph traversal.</p>
+
+        <p>The next two parts of this series will show how these techniques work in the agricultural context: Part 2 covers the RAG pipeline and retrieval strategy in detail, and Part 3 covers the conversational interface and evaluation results.</p>
+
+        <hr>
+
+        <h2>What's Next</h2>
+
+        <p>In <a href="part2-rag-pipeline.html">Part 2</a>, we dive into the core of the system: how AgriSage decomposes complex agricultural questions using the ReAct pattern, generates schema-aware Cypher queries with domain-specific few-shot examples, and combines graph-native and vector retrieval into a hybrid strategy. We will walk through concrete code examples showing the full pipeline from natural language question to structured graph traversal.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-rag-pipeline.html">Part 2: RAG Pipeline &amp; Retrieval &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
