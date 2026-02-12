@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Constraint Reasoning and Farm Simulation — CropCommand Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Constraint Reasoning and Farm Simulation</h1>
+        <p class="meta">CropCommand Series · Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p>In the <a href="part1-nl-to-plans.html">previous post</a> we followed a natural language command through CropCommand's parsing and decomposition pipeline, producing an ordered sequence of atomic robot actions. But that plan is naive. It does not know that the wind is gusting at 25 km/h (too high for spray drift control), that the target field has an 8-degree slope (beyond the sprayer's limit), or that the rain forecast leaves only 90 minutes before precipitation washes away the application. A plan that ignores these realities is worse than no plan at all &mdash; it wastes chemicals, damages crops, and erodes trust.</p>
+
+        <p>This post covers the constraint engine and farm simulation that transform a raw task sequence into a validated, physically grounded execution plan.</p>
+
+        <h2>The Constraint Landscape</h2>
+
+        <p>Agricultural robot operations are bounded by an unusually diverse set of constraints. Unlike a warehouse robot that operates in a controlled environment, a field robot faces:</p>
+
+        <ul>
+          <li><strong>Weather constraints:</strong> Wind speed, temperature, precipitation, forecast conditions</li>
+          <li><strong>Terrain constraints:</strong> Slope, soil type, field boundaries</li>
+          <li><strong>Robot capability constraints:</strong> Battery level, tank capacity, operational status, supported actions</li>
+          <li><strong>Temporal constraints:</strong> Deadlines, time-of-day restrictions, scheduling windows</li>
+          <li><strong>Spatial constraints:</strong> Avoidance zones, organic certification buffers, water sources</li>
+          <li><strong>Crop state constraints:</strong> Growth stage, disease status, harvest readiness</li>
+        </ul>
+
+        <p>CropCommand models these as a unified constraint evaluation framework through the <code>ConstraintEngine</code> class and the <code>Constraint</code> model.</p>
+
+        <h2>The Constraint Model</h2>
+
+        <p>Every constraint evaluation in CropCommand produces a <code>Constraint</code> instance:</p>
+
+<pre><code>class Constraint(BaseModel):
+    type: ConstraintType        # WEATHER, TERRAIN, CROP_STATE, ROBOT_CAPABILITY, TEMPORAL, SPATIAL
+    name: str                   # Short label, e.g. "Weather suitability"
+    description: str            # Detailed explanation of the evaluation
+    is_satisfied: bool          # Pass/fail
+    details: Dict[str, Any]     # Structured data for downstream reasoning</code></pre>
+
+        <p>The <code>ConstraintType</code> enum classifies constraints into six categories:</p>
+
+<pre><code>class ConstraintType(str, Enum):
+    WEATHER = "weather"
+    TERRAIN = "terrain"
+    CROP_STATE = "crop_state"
+    ROBOT_CAPABILITY = "robot_capability"
+    TEMPORAL = "temporal"
+    SPATIAL = "spatial"</code></pre>
+
+        <p>This categorization serves two purposes. First, it lets the plan explainer produce structured reports ("Weather: SATISFIED", "Terrain: VIOLATED") that are easy for a farmer to scan. Second, it enables future extensions &mdash; adding crop-state constraints, for example, requires a new check method but no changes to the framework.</p>
+
+        <h2>Weather Constraint Checking</h2>
+
+        <p>Weather is the most complex constraint category because it interacts with the specific action type. The <code>check_weather</code> method on <code>ConstraintEngine</code> evaluates several conditions:</p>
+
+<pre><code>def check_weather(
+    self,
+    conditions: WeatherConditions,
+    robot: Robot,
+    action: TaskAction,
+) -&gt; Constraint:</code></pre>
+
+        <p>The <code>WeatherConditions</code> model captures the current snapshot:</p>
+
+<pre><code>class WeatherConditions(BaseModel):
+    temperature_celsius: float = 20.0
+    humidity_pct: float = 50.0
+    wind_speed_kmh: float = 10.0
+    precipitation_mm: float = 0.0
+    forecast_rain_hours: Optional[float] = None</code></pre>
+
+        <h3>Wind Speed</h3>
+
+        <p>Every robot has a <code>max_wind_speed_kmh</code> in its constraints. But spraying operations have an additional, action-specific limit: 20 km/h. Above this threshold, spray drift becomes uncontrollable &mdash; chemical lands on non-target areas, reducing efficacy and potentially violating organic certification boundaries.</p>
+
+<pre><code># General wind check
+if conditions.wind_speed_kmh &gt; robot.constraints.max_wind_speed_kmh:
+    violations.append(
+        f"Wind speed {conditions.wind_speed_kmh} km/h exceeds robot limit "
+        f"{robot.constraints.max_wind_speed_kmh} km/h."
+    )
+
+# Spray-specific drift risk
+if action.action_type == ActionType.SPRAY and conditions.wind_speed_kmh &gt; 20.0:
+    violations.append(
+        f"Spraying not recommended at wind speed {conditions.wind_speed_kmh} km/h (drift risk)."
+    )</code></pre>
+
+        <p>This layered approach &mdash; general robot limits plus action-specific rules &mdash; is a design pattern that appears throughout the constraint engine.</p>
+
+        <h3>Precipitation and Forecast</h3>
+
+        <p>Active precipitation makes spraying ineffective immediately (the chemical is diluted and washed off). But even dry conditions can be problematic if rain is imminent:</p>
+
+<pre><code>if (
+    action.action_type == ActionType.SPRAY
+    and conditions.forecast_rain_hours is not None
+    and conditions.forecast_rain_hours &lt; 2.0
+):
+    violations.append(
+        f"Rain forecast in {conditions.forecast_rain_hours:.1f} hours; spray may wash off."
+    )</code></pre>
+
+        <p>The 2-hour threshold is standard in agricultural chemical application guidelines. Most fungicides and herbicides need at least 2 hours of dry conditions after application to be absorbed by plant tissue.</p>
+
+        <h3>Temperature</h3>
+
+        <p>Extreme cold affects both the robot's mechanical components and the chemical's efficacy. The constraint engine checks against the robot's <code>min_temperature_celsius</code>. The ground sprayer in CropCommand's sample farm has a minimum operating temperature of 0&deg;C, while the drone surveyor requires at least 5&deg;C (cold batteries reduce flight time).</p>
+
+        <h2>Terrain Constraint Checking</h2>
+
+        <p>The terrain check is straightforward but critical. Each field has a <code>slope_degrees</code> property, and each robot has a <code>max_slope_degrees</code> constraint:</p>
+
+<pre><code>def check_terrain(self, field: FieldConfig, robot: Robot) -&gt; Constraint:
+    violations: List[str] = []
+    if field.slope_degrees &gt; robot.constraints.max_slope_degrees:
+        violations.append(
+            f"Field slope {field.slope_degrees} deg exceeds robot limit "
+            f"{robot.constraints.max_slope_degrees} deg."
+        )</code></pre>
+
+        <p>In the sample farm, Field East has an 8-degree slope with hilly terrain. The ground sprayer can handle slopes up to 10 degrees, so it passes. But a hypothetical smaller robot with a 5-degree limit would be flagged. The terrain constraint result includes both values in its <code>details</code> dict, enabling the feedback system to suggest alternatives.</p>
+
+        <h2>Robot Capability Checking</h2>
+
+        <p>Not every robot can perform every action. The capability check verifies three conditions:</p>
+
+        <ol>
+          <li><strong>Capability match:</strong> Does the robot's <code>capabilities</code> list include the required action type? Universal actions (NAVIGATE, CONFIGURE, RETURN_BASE, WAIT) are exempt.</li>
+          <li><strong>Battery level:</strong> Is the battery above the critical threshold (10%)?</li>
+          <li><strong>Availability:</strong> Is the robot currently IDLE?</li>
+        </ol>
+
+<pre><code>def check_robot_capability(self, robot: Robot, action: TaskAction) -&gt; Constraint:
+    violations: List[str] = []
+    required_cap = action.action_type.value  # e.g. "spray"
+
+    universal = {ActionType.NAVIGATE, ActionType.CONFIGURE, ActionType.RETURN_BASE, ActionType.WAIT}
+    if action.action_type not in universal:
+        if required_cap not in [c.lower() for c in robot.capabilities]:
+            violations.append(f"Robot '{robot.name}' lacks capability '{required_cap}'.")
+
+    if robot.battery_level &lt; 10.0:
+        violations.append(f"Robot battery critically low ({robot.battery_level:.0f}%).")
+
+    if robot.status != RobotStatus.IDLE:
+        violations.append(f"Robot '{robot.name}' is currently {robot.status.value}.")</code></pre>
+
+        <p>The <code>Robot</code> model encodes capabilities as a simple list of strings. This design keeps the capability check generic. When a new action type is added, robots that support it simply include the corresponding string in their capabilities list.</p>
+
+        <h2>Temporal and Spatial Constraints</h2>
+
+        <h3>Temporal Deadlines</h3>
+
+        <p>The temporal check evaluates whether the plan's total duration fits within a deadline:</p>
+
+<pre><code>def check_temporal(self, deadline: Optional[str], plan_duration_minutes: float) -&gt; Constraint:
+    if deadline is None:
+        return Constraint(
+            type=ConstraintType.TEMPORAL,
+            name="Temporal deadline",
+            description="No deadline specified.",
+            is_satisfied=True,
+        )
+    if plan_duration_minutes &gt; 240:
+        return Constraint(
+            type=ConstraintType.TEMPORAL,
+            name="Temporal deadline",
+            description=f"Plan duration ({plan_duration_minutes:.0f} min) may exceed deadline.",
+            is_satisfied=False,
+        )</code></pre>
+
+        <p>The current implementation uses a heuristic (4-hour threshold) as a stand-in for full temporal reasoning. A production system would parse the deadline into a datetime, compare against current time plus plan duration, and compute the margin precisely. The architecture supports this upgrade without changing the interface.</p>
+
+        <h3>Spatial Avoidance</h3>
+
+        <p>The spatial check verifies that avoidance zones referenced in the command actually exist in the field's zone registry:</p>
+
+<pre><code>def check_spatial(self, field, avoid_zones, route_actions) -&gt; Constraint:
+    ...
+    if field is not None:
+        field_zone_names = [z.name.lower() for z in field.zones]
+        for zone_name in avoid_zones:
+            if zone_name.lower() in field_zone_names:
+                pass  # Zone exists, planner will route around it
+            else:
+                violations.append(f"Zone '{zone_name}' not found in field '{field.name}'.")</code></pre>
+
+        <p>If the farmer says "avoid the organic section" but the target field has no zone named "organic," the constraint is violated &mdash; not because it cannot be satisfied, but because the system cannot verify it. This is a deliberate safety-first design: when in doubt, flag for human review.</p>
+
+        <h2>The Farm Simulation Environment</h2>
+
+        <p>All of these constraint checks require a representation of the physical world. CropCommand's <code>FarmEnvironment</code> model provides it, and the <code>SimulatedEnvironment</code> class can either load one from a JSON configuration file or create a fully populated sample farm for demonstrations.</p>
+
+        <h3>The Sample Farm</h3>
+
+        <p>The <code>create_sample_farm</code> factory method builds a realistic test environment:</p>
+
+        <p><strong>Four fields:</strong></p>
+        <ul>
+          <li><strong>Field North</strong> &mdash; 5 ha, wheat, 3-degree slope, clay loam, with a crop zone and a buffer zone</li>
+          <li><strong>Field South</strong> &mdash; 8 ha, corn, 5-degree slope, sandy loam</li>
+          <li><strong>Field East</strong> &mdash; 3.5 ha, barley, 8-degree slope, hilly terrain, with a water source zone</li>
+          <li><strong>Organic Field</strong> &mdash; 2 ha, tomatoes, 2-degree slope, with an organic zone</li>
+        </ul>
+
+        <p><strong>Three robots:</strong></p>
+        <ul>
+          <li><strong>Sprayer Alpha</strong> &mdash; Ground sprayer, capabilities: spray + navigate, max wind 30 km/h, max slope 10&deg;, 200L tank, 3 nozzle types</li>
+          <li><strong>Harvester Beta</strong> &mdash; Harvester, capabilities: harvest + navigate, max wind 50 km/h, max slope 12&deg;</li>
+          <li><strong>Drone Scout</strong> &mdash; Drone surveyor, capabilities: survey + navigate, max wind 25 km/h, 1.5-hour battery</li>
+        </ul>
+
+        <p><strong>Weather:</strong> 18&deg;C, 55% humidity, 12 km/h wind, no precipitation.</p>
+
+        <p>Each field has GPS boundary coordinates and named zones with explicit polygons. Each robot has detailed operating constraints. This is the data that the constraint engine queries during evaluation.</p>
+
+        <h3>Loading Custom Farms</h3>
+
+        <p>For real deployments (or custom test scenarios), <code>SimulatedEnvironment.load_farm</code> parses a JSON file:</p>
+
+<pre><code>@staticmethod
+def load_farm(config_path: str | Path) -&gt; FarmEnvironment:
+    with open(path, "r", encoding="utf-8") as fh:
+        data: Dict[str, Any] = json.load(fh)
+
+    # Parse fields with zones, boundaries, coordinates
+    fields: List[FieldConfig] = []
+    for fd in data.get("fields", []):
+        zones = [
+            Zone(
+                name=z["name"],
+                zone_type=ZoneType(z.get("zone_type", "crop")),
+                polygon=[Coordinate(**c) for c in z.get("polygon", [])],
+            )
+            for z in fd.get("zones", [])
+        ]
+        ...</code></pre>
+
+        <p>The JSON-based configuration means farms can be defined and shared without code changes &mdash; useful for testing across different farm geometries and robot fleets.</p>
+
+        <h2>Aggregate Evaluation: The evaluate_all Pipeline</h2>
+
+        <p>The <code>evaluate_all</code> method on <code>ConstraintEngine</code> runs every applicable check against a plan:</p>
+
+<pre><code>def evaluate_all(self, plan: ExecutionPlan, environment: FarmEnvironment) -&gt; List[Constraint]:
+    results: List[Constraint] = []
+
+    # Resolve robot and field from the plan
+    robot = environment.get_robot(plan.robot_id) if plan.robot_id else None
+    field = None
+    for task in plan.tasks:
+        if task.target_field:
+            field = environment.get_field(task.target_field)
+            break
+
+    # Weather checks (per task)
+    weather = WeatherConditions(**environment.weather_conditions)
+    for task in plan.tasks:
+        if robot:
+            results.append(self.check_weather(weather, robot, task))
+            results.append(self.check_robot_capability(robot, task))
+
+    # Terrain check (once per field-robot pair)
+    if field and robot:
+        results.append(self.check_terrain(field, robot))
+
+    # Temporal and spatial checks
+    ...
+    return results</code></pre>
+
+        <p>Several design choices are visible here:</p>
+
+        <ol>
+          <li><strong>Weather and capability are checked per-task</strong>, because different steps may have different requirements (a WAIT step is unaffected by wind; a SPRAY step is highly sensitive to it).</li>
+          <li><strong>Terrain is checked once per field-robot pair</strong>, since the slope does not change between steps.</li>
+          <li><strong>Temporal and spatial constraints are checked once for the whole plan</strong>, using aggregated data from all tasks.</li>
+        </ol>
+
+        <p>The result is a list of <code>Constraint</code> objects. The <code>PlanGenerator</code> splits these into <code>constraints_satisfied</code> and <code>constraints_violated</code>:</p>
+
+<pre><code>constraints = self.constraint_engine.evaluate_all(plan, environment)
+plan.constraints_satisfied = [c.name for c in constraints if c.is_satisfied]
+plan.constraints_violated = [c.name for c in constraints if not c.is_satisfied]</code></pre>
+
+        <p>If any constraints are violated, the plan's status remains <code>PLANNED</code> (needs review) rather than advancing to <code>VALIDATED</code>.</p>
+
+        <h2>How Constraints Reshape a Plan: An Example</h2>
+
+        <p>Let us revisit our running example: <em>"Spray the northern tomato field before the rain, avoiding the organic section."</em></p>
+
+        <h3>The Naive Plan</h3>
+
+        <p>After decomposition, the plan has five steps totalling approximately 90 minutes (2 + 3 + 5 + 75 + 5) for a 5-hectare field.</p>
+
+        <h3>Constraint Evaluation</h3>
+
+        <p><strong>Weather check (per task):</strong> Wind is 12 km/h &mdash; below both the robot limit (30 km/h) and the spray drift threshold (20 km/h). Temperature 18&deg;C is above the minimum. No active precipitation. All weather constraints: SATISFIED.</p>
+
+        <p><strong>Terrain check:</strong> Field North slope 3&deg; is within Sprayer Alpha's 10&deg; limit. SATISFIED.</p>
+
+        <p><strong>Robot capability check (per task):</strong> WAIT, CONFIGURE, NAVIGATE, RETURN_BASE are universal actions. SPRAY is in Sprayer Alpha's capabilities. Battery at 95%. Status is IDLE. All SATISFIED.</p>
+
+        <p><strong>Temporal check:</strong> Total duration ~90 minutes, well under the 240-minute heuristic threshold. SATISFIED.</p>
+
+        <p><strong>Spatial check:</strong> Avoid zones: ["organic"]. The system looks for an "organic" zone in Field North's zone list. Field North has "Main Crop" and "Buffer" zones but no "Organic Zone." The constraint is <strong>VIOLATED</strong>: "Zone 'organic' not found in field 'Field North'."</p>
+
+        <h3>What This Means</h3>
+
+        <p>The spatial violation is informative, not catastrophic. It tells the farmer: "You asked me to avoid the organic section, but the field you referenced does not have a zone by that name. Did you mean the adjacent Organic Field, or a section within Field North that has not been registered?" This is exactly the kind of ambiguity that the human-in-the-loop feedback system (<a href="part3-feedback.html">Part 3</a>) is designed to resolve.</p>
+
+        <h3>If Weather Were Worse</h3>
+
+        <p>Imagine the wind picked up to 22 km/h and rain was forecast in 1.5 hours. The constraint evaluation would now show:</p>
+
+        <ul>
+          <li><strong>Weather (SPRAY step):</strong> VIOLATED &mdash; "Spraying not recommended at wind speed 22 km/h (drift risk)."</li>
+          <li><strong>Weather (SPRAY step):</strong> VIOLATED &mdash; "Rain forecast in 1.5 hours; spray may wash off."</li>
+        </ul>
+
+        <p>The plan would remain in <code>PLANNED</code> status with two weather violations. The farmer could then choose to delay the operation, switch to a low-drift nozzle configuration (which CropCommand's robot model supports &mdash; <code>NozzleType.LOW_DRIFT</code>), or override the constraint with explicit approval.</p>
+
+        <h2>The Plan Generator Pipeline</h2>
+
+        <p>All of these components are orchestrated by the <code>PlanGenerator</code> class, which implements the complete six-stage pipeline:</p>
+
+<pre><code>parse &rarr; resolve &rarr; decompose &rarr; constrain &rarr; schedule &rarr; validate</code></pre>
+
+<pre><code>class PlanGenerator:
+    def __init__(self) -&gt; None:
+        self.parser = IntentParser()
+        self.resolver = CommandResolver()
+        self.decomposer = TaskDecomposer()
+        self.constraint_engine = ConstraintEngine()
+        self.scheduler = Scheduler()
+        self.validator = PlanValidator()
+
+    def generate_plan(self, command: str, environment: FarmEnvironment) -&gt; ExecutionPlan:
+        # 1. Parse
+        parsed = self.parser.parse(command)
+        # 2. Resolve ambiguities
+        parsed = self.resolver.resolve_command(parsed, environment)
+        # 3. Decompose into task actions
+        tasks = self.decomposer.decompose(parsed, environment)
+        # 4. Build plan + evaluate constraints
+        ...
+        # 5. Schedule
+        plan.tasks = self.scheduler.schedule(tasks, constraints)
+        # 6. Validate
+        is_valid, warnings = self.validator.validate(plan, environment)</code></pre>
+
+        <p>The <code>CommandResolver</code> (step 2) bridges the gap between parsed entities and the actual environment. If the user said "the north field" and the environment has a field named "Field North," the resolver maps one to the other. If no robot was specified, the resolver can select one based on capability matching.</p>
+
+        <p>The <code>Scheduler</code> (step 5) assigns concrete start times to each task action, respecting the dependency ordering and any temporal constraints. The <code>PlanValidator</code> (step 6) runs final sanity checks &mdash; ensuring no orphaned dependencies, no negative durations, and no conflicting assignments.</p>
+
+        <h2>The Execution Plan</h2>
+
+        <p>The final output is an <code>ExecutionPlan</code>:</p>
+
+<pre><code>class ExecutionPlan(BaseModel):
+    plan_id: str                      # "plan-a3f8b2c91e04"
+    command: str                      # Original NL command
+    tasks: List[TaskAction]           # Ordered, scheduled actions
+    robot_id: Optional[str]           # Assigned robot
+    total_duration_minutes: float     # Sum of estimated durations
+    confidence: float                 # Parser confidence
+    constraints_satisfied: List[str]  # ["Weather suitability", "Terrain traversability", ...]
+    constraints_violated: List[str]   # ["Spatial avoidance"]
+    explanation: str                  # Human-readable summary
+    status: TaskStatus                # PLANNED or VALIDATED
+    warnings: List[str]               # Non-blocking issues</code></pre>
+
+        <p>This object is the contract between the planning system and the human operator. It contains everything needed to understand, evaluate, and approve (or modify) the plan.</p>
+
+        <h2>Key Takeaways</h2>
+
+        <ul>
+          <li><strong>Agricultural constraints are diverse and interacting.</strong> Weather affects chemical efficacy, terrain limits robot mobility, battery levels constrain mission duration, and spatial zones create no-go areas. A constraint engine must handle all of these in a unified framework.</li>
+          <li><strong>Per-task constraint checking is essential.</strong> Different steps in the same plan may have radically different constraint profiles. A WAIT step is weather-agnostic; a SPRAY step is weather-critical.</li>
+          <li><strong>Constraint violations are informative, not terminal.</strong> A violated constraint does not automatically cancel the plan. It surfaces the issue to the human operator with enough detail to make an informed decision.</li>
+          <li><strong>Simulation enables testing without hardware.</strong> The <code>SimulatedEnvironment</code> with its sample farm, robot fleet, and weather conditions allows the entire pipeline to be exercised and validated without a single physical robot.</li>
+        </ul>
+
+        <h2>PhD Alignment</h2>
+
+        <p>This constraint reasoning architecture demonstrates the kind of multi-faceted planning challenge that a PhD in human-robot interaction for agricultural robotics must address. The constraints are not just technical (battery, slope) but contextual (weather forecasts, organic certification zones) and temporal (deadlines, time-of-day preferences). Building systems that can reason across all of these dimensions &mdash; and explain their reasoning to human operators &mdash; is central to making autonomous agricultural robots trustworthy and practical.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-nl-to-plans.html">&larr; From NL to Robot Task Plans</a>
+        <a href="part3-feedback.html">Human-in-the-Loop Feedback &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

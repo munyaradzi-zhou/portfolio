@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Projects — Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="Research projects in conversational AI, knowledge graphs, and agricultural robotics.">
+  <link rel="stylesheet" href="css/variables.css">
+  <link rel="stylesheet" href="css/main.css">
+</head>
+<body>
+
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="index.html">Home</a></li>
+        <li><a href="projects.html">Projects</a></li>
+        <li><a href="blogs.html">Blog</a></li>
+        <li><a href="cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <main class="container">
+    <h1 class="section-title">Projects</h1>
+    <p style="color: var(--color-text-light); margin-bottom: var(--space-2xl); max-width: 700px;">
+      Three systems that demonstrate end-to-end capability across the conversational AI &times; agriculture stack:
+      streaming analytics, knowledge retrieval, and robot task planning.
+    </p>
+
+    <div class="card-grid">
+
+      <!-- FarmSmart -->
+      <div class="card" id="farmsmart">
+        <h3>FarmSmart</h3>
+        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
+          Real-Time NL Analytics over IoT Agricultural Streams
+        </p>
+        <p>
+          A complete natural language analytics system over real-time IoT sensor streams.
+          Farmers ask questions like "What was the average soil moisture in the north field
+          last week?" and receive instant answers derived from live sensor data processed
+          through Apache Spark Structured Streaming.
+        </p>
+        <p>
+          The system features a custom NL-to-query translator with intent classification
+          (TF-IDF + Logistic Regression), slot extraction, and query generation that routes
+          through real data repositories — InfluxDB for time-series sensor data, PostgreSQL
+          for field metadata, and a real-time alert engine for anomaly detection.
+        </p>
+
+        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>Apache Kafka for sensor data ingestion from IoT devices</li>
+          <li>Spark Structured Streaming with sliding window aggregations</li>
+          <li>Intent classification + slot extraction NLP pipeline</li>
+          <li>InfluxDB time-series storage with PostgreSQL field metadata</li>
+          <li>FastAPI backend with React dashboard frontend</li>
+          <li>Kubernetes-ready with Docker Compose orchestration</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
+        <p style="font-style: italic;">
+          Directly addresses "conversational orchestration over streaming dataflows" —
+          the core data infrastructure challenge of Position-L.
+        </p>
+
+        <div class="tags" style="margin-top: var(--space-lg);">
+          <span class="tag tag--accent">Streaming Analytics</span>
+          <span class="tag">Python</span>
+          <span class="tag">Apache Spark</span>
+          <span class="tag">Kafka</span>
+          <span class="tag">InfluxDB</span>
+          <span class="tag">PostgreSQL</span>
+          <span class="tag">FastAPI</span>
+          <span class="tag">React</span>
+          <span class="tag">Docker</span>
+          <span class="tag">NLP</span>
+        </div>
+
+        <div style="margin-top: var(--space-lg);">
+          <a href="https://github.com/munyaradzi-zhou/farmsmart" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
+          &nbsp;&nbsp;
+          <a href="blog/farmsmart/part1-introduction.html" style="font-weight: 500;">Read blog series &rarr;</a>
+        </div>
+      </div>
+
+      <!-- AgriSage -->
+      <div class="card" id="agrisage">
+        <h3>AgriSage</h3>
+        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
+          Graph-Native RAG for Agricultural Knowledge Retrieval
+        </p>
+        <p>
+          A graph-native Retrieval-Augmented Generation system that builds agricultural
+          knowledge graphs from crop manuals, spraying guidelines, and pest management
+          documents. Uses the same ReAct decomposition and schema-aware Cypher generation
+          architecture from my master's thesis, adapted for the agricultural domain.
+        </p>
+        <p>
+          The system ingests unstructured agricultural documents, extracts entities
+          (crops, pests, diseases, treatments, parameters), builds a structured Neo4j
+          knowledge graph, and enables multi-hop reasoning through conversational queries.
+          A hybrid retrieval approach combines graph-native traversal with vector similarity
+          for comprehensive coverage.
+        </p>
+
+        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>Neo4j knowledge graph with agricultural ontology (Crop, Pest, Disease, Treatment, Parameter nodes)</li>
+          <li>ReAct-based query decomposition for complex multi-hop questions</li>
+          <li>Schema-aware Cypher generation with few-shot domain-specific prompting</li>
+          <li>Hybrid graph + vector (ChromaDB) retrieval pipeline</li>
+          <li>Document ingestion with entity extraction and relationship mapping</li>
+          <li>Streamlit conversational interface with graph visualization</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
+        <p style="font-style: italic;">
+          Directly addresses "LLM capabilities to extract parameter tuning values from
+          unstructured knowledge articles and configuration manuals" — the knowledge
+          retrieval backbone of Position-L.
+        </p>
+
+        <div class="tags" style="margin-top: var(--space-lg);">
+          <span class="tag tag--accent">Knowledge Graphs</span>
+          <span class="tag">Python</span>
+          <span class="tag">Neo4j</span>
+          <span class="tag">RAG</span>
+          <span class="tag">ReAct</span>
+          <span class="tag">LLMs</span>
+          <span class="tag">ChromaDB</span>
+          <span class="tag">FastAPI</span>
+          <span class="tag">Streamlit</span>
+        </div>
+
+        <div style="margin-top: var(--space-lg);">
+          <a href="https://github.com/munyaradzi-zhou/agrisage" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
+          &nbsp;&nbsp;
+          <a href="blog/agrisage/part1-knowledge-graph.html" style="font-weight: 500;">Read blog series &rarr;</a>
+        </div>
+      </div>
+
+      <!-- CropCommand -->
+      <div class="card" id="cropcommand">
+        <h3>CropCommand</h3>
+        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
+          Natural Language Task Planning for Agricultural Robots
+        </p>
+        <p>
+          A natural language task planning system that translates farming commands into
+          structured, constraint-aware execution plans for agricultural robots. Farmers
+          speak naturally — "Spray the northern tomato field before the rain, avoiding
+          the organic section" — and receive validated, executable robot task plans with
+          full constraint reasoning.
+        </p>
+        <p>
+          The system parses natural language commands, decomposes them into atomic tasks,
+          applies domain-specific constraints (weather windows, crop growth stages, terrain
+          limitations, robot capabilities), generates optimised schedules, and presents
+          plans for human review with natural language explanations and iterative refinement.
+        </p>
+
+        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>NL intent parsing with entity extraction and command resolution</li>
+          <li>Hierarchical task decomposition into atomic robot actions</li>
+          <li>Multi-dimensional constraint engine (weather, terrain, crop state, robot capabilities)</li>
+          <li>Plan generation with scheduling optimisation and confidence scoring</li>
+          <li>Farm environment and robot state simulation</li>
+          <li>Human-in-the-loop feedback with NL plan refinement and explanation generation</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
+        <p style="font-style: italic;">
+          Directly addresses "algorithms for generating robot control processes given
+          natural language utterances" and "human-in-the-loop feedback loops for user
+          supervision and trust calibration" — the robot interaction core of Position-L.
+        </p>
+
+        <div class="tags" style="margin-top: var(--space-lg);">
+          <span class="tag tag--accent">Robot Planning</span>
+          <span class="tag">Python</span>
+          <span class="tag">NL-to-Plan</span>
+          <span class="tag">Constraint Reasoning</span>
+          <span class="tag">Simulation</span>
+          <span class="tag">Human-in-the-Loop</span>
+          <span class="tag">FastAPI</span>
+          <span class="tag">Streamlit</span>
+        </div>
+
+        <div style="margin-top: var(--space-lg);">
+          <a href="https://github.com/munyaradzi-zhou/cropcommand" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
+          &nbsp;&nbsp;
+          <a href="blog/cropcommand/part1-nl-to-plans.html" style="font-weight: 500;">Read blog series &rarr;</a>
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building AgriSage: Conversational Interface and Evaluation (Part 3) — AgriSage Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building AgriSage: Conversational Interface and Evaluation (Part 3)</h1>
+        <p class="meta">AgriSage Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series on building AgriSage. <a href="part1-knowledge-graph.html">Part 1</a> covered the motivation, knowledge graph schema, and ingestion pipeline. <a href="part2-rag-pipeline.html">Part 2</a> covered ReAct query decomposition, Cypher generation, and hybrid retrieval.</em></p>
+
+        <hr>
+
+        <h2>Recap</h2>
+
+        <p>In the first two parts, we built the foundation of AgriSage: a Neo4j knowledge graph encoding agricultural entities and their relationships (Part 1), and a retrieval pipeline that decomposes complex questions, generates schema-aware Cypher queries, and falls back to vector search when needed (Part 2).</p>
+
+        <p>But retrieval alone is not enough. The system must transform structured graph data into clear, actionable natural language responses, manage multi-turn conversations so that follow-up questions work naturally, provide source citations so users can verify the information, and present everything through an accessible interface.</p>
+
+        <p>This final part covers the conversational layer, the evaluation framework, and the lessons learned from building AgriSage.</p>
+
+        <hr>
+
+        <h2>Response Generation: From Graph Data to Natural Language</h2>
+
+        <p>The <code>ResponseGenerator</code> bridges the gap between structured retrieval results and human-readable answers. It operates in two modes: LLM-powered generation for high-quality responses, and rule-based formatting as a fallback.</p>
+
+        <h3>LLM-Powered Response Generation</h3>
+
+        <p>When an LLM is available, the generator sends the structured graph data along with the user's question to produce a contextual, actionable response:</p>
+
+<pre><code class="language-python">def _llm_response(self, question: str, graph_data: list, vector_data: list, plan) -&gt; str:
+    data_summary = self._summarize_data(graph_data)
+    vector_summary = ""
+    if vector_data:
+        vector_summary = "\n\nAdditional context from documents:\n" + "\n".join(
+            d.get("text", "")[:200] for d in vector_data[:3]
+        )
+
+    prompt = f"""Based on the following data from an agricultural knowledge graph,
+answer the user's question in a clear, helpful, and practical way.
+Include specific values (dosages, intervals, etc.) when available.
+
+Question: {question}
+
+Data from knowledge graph:
+{data_summary}
+{vector_summary}
+
+Provide a concise, actionable answer. Mention relevant safety information
+(pre-harvest intervals, contraindications) if applicable."""
+
+    return self.llm_client.generate_response(
+        [{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=400,
+    )</code></pre>
+
+        <p>Two details matter here. First, the temperature is set to <strong>0.3</strong> -- low enough to keep the response grounded in the retrieved data, but not zero, which can produce overly rigid phrasing. Second, the prompt explicitly instructs the model to include safety information like pre-harvest intervals. In agriculture, omitting a pre-harvest interval from a treatment recommendation could have real consequences.</p>
+
+        <h3>Rule-Based Fallback</h3>
+
+        <p>When no LLM is available, the system falls back to a structured formatting approach that organizes the graph records into a readable list:</p>
+
+<pre><code class="language-python">@staticmethod
+def _format_response(question: str, graph_data: list, vector_data: list, is_complex: bool) -&gt; str:
+    parts: list[str] = []
+
+    if graph_data:
+        parts.append(f"Based on the agricultural knowledge graph ({len(graph_data)} results found):\n")
+        for i, record in enumerate(graph_data[:8]):
+            items = []
+            for key, val in record.items():
+                if val is not None and val != "" and val != []:
+                    if isinstance(val, list):
+                        val_str = "; ".join(
+                            str(v) if not isinstance(v, dict)
+                            else ", ".join(f"{k}={v2}" for k, v2 in v.items() if v2)
+                            for v in val
+                        )
+                        items.append(f"  {key}: {val_str}")
+                    else:
+                        items.append(f"  {key}: {val}")
+            if items:
+                parts.append(f"\n{i + 1}. " + "\n".join(items))
+
+    if vector_data:
+        parts.append(f"\n\nAdditional information from documents:")
+        for doc in vector_data[:3]:
+            text = doc.get("text", "")[:150]
+            parts.append(f"  - {text}...")
+
+    return "\n".join(parts) if parts else "No results found."</code></pre>
+
+        <p>This fallback is not as polished as an LLM-generated response, but it is deterministic, fast, and guaranteed to include all the retrieved data. It is particularly useful during development and testing, where you want to verify that the retrieval pipeline is returning the right data without LLM paraphrasing obscuring the results.</p>
+
+        <h3>Source Citations</h3>
+
+        <p>Every response includes source citations extracted from both graph and vector retrieval results:</p>
+
+<pre><code class="language-python">@staticmethod
+def _extract_sources(graph_data: list, vector_data: list) -&gt; list[dict[str, str]]:
+    sources: list[dict[str, str]] = []
+    seen = set()
+    for record in graph_data:
+        if "document" in record and record["document"] not in seen:
+            sources.append({"title": record["document"], "type": "knowledge_graph"})
+            seen.add(record["document"])
+    for doc in vector_data:
+        meta = doc.get("metadata", {})
+        source = meta.get("filename", meta.get("source", ""))
+        if source and source not in seen:
+            sources.append({"title": source, "type": "vector_search"})
+            seen.add(source)
+    return sources</code></pre>
+
+        <p>Sources are deduplicated and tagged by their retrieval origin (knowledge_graph vs. vector_search). This lets the frontend display where each piece of information came from, giving users confidence in the answer and a path to verify it.</p>
+
+        <h3>Confidence Scoring</h3>
+
+        <p>The response generator also computes a confidence score that reflects how well-supported the answer is:</p>
+
+<pre><code class="language-python">@staticmethod
+def _calculate_confidence(graph_data, vector_data, retrieval_result) -&gt; float:
+    score = 0.0
+    if graph_data:
+        score += min(0.6, len(graph_data) * 0.1)
+    if vector_data:
+        score += min(0.2, len(vector_data) * 0.05)
+    if "graph" in retrieval_result.get("retrieval_sources", []):
+        score += 0.2  # Boost for graph-native retrieval (more precise)
+    return min(score, 1.0)</code></pre>
+
+        <p>Graph results receive a higher weight than vector results because they are structurally validated -- the relationships they traverse are defined in the schema, not inferred. The confidence score surfaces in the frontend so users can gauge how much to trust a given answer.</p>
+
+        <hr>
+
+        <h2>Session Management</h2>
+
+        <p>Agricultural question-answering often involves follow-up questions: "What about the dosage?" after asking about treatments, or "Are there organic alternatives?" after seeing chemical options. AgriSage supports this through a session management layer.</p>
+
+        <h3>Session and Message Data Model</h3>
+
+        <p>Each conversation session maintains an ordered history of messages with timestamps and metadata:</p>
+
+<pre><code class="language-python">@dataclass
+class Message:
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class Session:
+    session_id: str
+    messages: list[Message] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    context: dict[str, Any] = field(default_factory=dict)
+
+    def add_message(self, role: str, content: str, metadata: dict[str, Any] | None = None):
+        self.messages.append(Message(role=role, content=content, metadata=metadata or {}))
+
+    def get_history(self, max_messages: int = 10) -&gt; list[dict[str, str]]:
+        recent = self.messages[-max_messages:]
+        return [{"role": m.role, "content": m.content} for m in recent]</code></pre>
+
+        <p>The <code>SessionManager</code> provides a simple interface for creating, retrieving, and clearing sessions:</p>
+
+<pre><code class="language-python">class SessionManager:
+    def __init__(self):
+        self._sessions: dict[str, Session] = {}
+
+    def get_or_create(self, session_id: str) -&gt; Session:
+        if session_id not in self._sessions:
+            self._sessions[session_id] = Session(session_id=session_id)
+        return self._sessions[session_id]
+
+    def clear(self, session_id: str) -&gt; None:
+        self._sessions.pop(session_id, None)</code></pre>
+
+        <p>The <code>get_history</code> method caps the context window at the 10 most recent messages. This prevents token limits from being exceeded while preserving enough context for follow-up questions.</p>
+
+        <hr>
+
+        <h2>API Layer: FastAPI</h2>
+
+        <p>The FastAPI backend exposes three endpoints that the frontend (and any other client) consumes:</p>
+
+<pre><code class="language-python">@router.post("/ask", response_model=QueryResponse)
+async def ask_question(request: QueryRequest) -&gt; QueryResponse:
+    retriever, response_gen = _get_services()
+    session = _sessions.get_or_create(request.session_id)
+    session.add_message("user", request.question)
+
+    retrieval_result = retriever.retrieve(request.question, request.domain)
+    response = response_gen.generate(request.question, retrieval_result)
+
+    session.add_message("assistant", response["text"],
+                        metadata={"confidence": response["confidence"]})
+
+    return QueryResponse(
+        answer=response["text"],
+        confidence=response["confidence"],
+        sources=response.get("sources", []),
+        is_complex=response.get("is_complex", False),
+        decomposition=response.get("decomposition", {}),
+        cypher_queries=response.get("cypher_queries", []),
+    )</code></pre>
+
+        <p>The response model returns not just the answer text, but the full retrieval context: confidence score, source citations, whether the query was decomposed, the decomposition reasoning and sub-question statuses, and the actual Cypher queries that were executed. This transparency is essential for debugging, for building user trust, and for the evaluation framework.</p>
+
+        <p>The API also includes a <strong>demo mode</strong> that activates when Neo4j is unavailable, allowing the frontend to function for demonstration purposes without a running database.</p>
+
+        <hr>
+
+        <h2>Streamlit Frontend</h2>
+
+        <p>The Streamlit frontend provides a chat interface with agricultural domain features:</p>
+
+<pre><code class="language-python"># Sidebar with domain filter and example questions
+with st.sidebar:
+    session_id = st.text_input("Session ID", value="default")
+    domain = st.selectbox(
+        "Domain Filter",
+        [None, "crop_protection", "crop_management", "sustainability"],
+        format_func=lambda x: "All domains" if x is None else x.replace("_", " ").title(),
+    )
+    st.markdown("### Example Questions")
+    examples = [
+        "What treatments are available for late blight on tomatoes?",
+        "What pests affect wheat?",
+        "What are the growth stages of maize?",
+    ]
+    for ex in examples:
+        if st.button(ex, key=ex):
+            st.session_state["question"] = ex</code></pre>
+
+        <p>When a response arrives, the frontend renders the answer text, source citations, and expandable sections for the query decomposition and the raw Cypher queries:</p>
+
+<pre><code class="language-python">if data.get("sources"):
+    st.markdown("**Sources:**")
+    for src in data["sources"]:
+        st.markdown(f"- {src['title']} ({src['type']})")
+
+if data.get("decomposition", {}).get("sub_questions"):
+    with st.expander("Query Decomposition"):
+        st.markdown(f"*{data['decomposition'].get('reasoning', '')}*")
+        for sq in data["decomposition"]["sub_questions"]:
+            st.markdown(f"{'Completed' if sq['status'] == 'completed' else 'Failed'}: {sq['question']}")
+
+if data.get("cypher_queries"):
+    with st.expander("Cypher Queries"):
+        for cq in data["cypher_queries"]:
+            st.code(cq.get("cypher", ""), language="cypher")</code></pre>
+
+        <p>Showing the Cypher queries and decomposition plan is a deliberate transparency choice. Agronomists and researchers can verify that the system is querying the right paths through the knowledge graph, and they can identify when a retrieval failure is due to a missing entity versus a wrong traversal pattern.</p>
+
+        <hr>
+
+        <h2>Benchmark Evaluation</h2>
+
+        <p>AgriSage includes a structured benchmark of <strong>10 agricultural questions</strong> split evenly between single-hop and multi-hop categories.</p>
+
+        <h3>The Benchmark</h3>
+
+        <p>The first four questions are single-hop, each requiring one graph traversal:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Question</th>
+              <th>Expected Entities</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td>What pests affect tomatoes?</td>
+              <td>Aphid, Whitefly, Spider Mite, Colorado Potato Beetle</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>What are the growth stages of maize?</td>
+              <td>Emergence, Vegetative Growth, Tasseling, Silking, Grain Fill, Maturity</td>
+            </tr>
+            <tr>
+              <td>3</td>
+              <td>What diseases affect grapes?</td>
+              <td>Powdery Mildew, Downy Mildew, Botrytis Gray Mold</td>
+            </tr>
+            <tr>
+              <td>4</td>
+              <td>List all organic treatments available.</td>
+              <td>Sulfur Dust, Neem Oil</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>The remaining six questions are multi-hop, requiring 2-4 traversals:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Question</th>
+              <th>Expected Entities</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>5</td>
+              <td>What treatments and dosages are recommended for late blight on tomatoes?</td>
+              <td>Copper Fungicide, Mancozeb</td>
+            </tr>
+            <tr>
+              <td>6</td>
+              <td>What organic treatments for aphids on tomatoes with application rates?</td>
+              <td>Neem Oil</td>
+            </tr>
+            <tr>
+              <td>7</td>
+              <td>During which growth stage of tomatoes should I apply copper fungicide?</td>
+              <td>Flowering, Fruit Development, Copper Fungicide</td>
+            </tr>
+            <tr>
+              <td>8</td>
+              <td>Biological control options for corn borer on maize with intervals?</td>
+              <td>Bacillus thuringiensis</td>
+            </tr>
+            <tr>
+              <td>9</td>
+              <td>Compare treatment options for powdery mildew on wheat vs. grapes.</td>
+              <td>Sulfur Dust, UV-C Irradiation</td>
+            </tr>
+            <tr>
+              <td>10</td>
+              <td>Physical treatments for fungal diseases and which crops benefit?</td>
+              <td>UV-C Irradiation</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Evaluation Methodology</h3>
+
+        <p>Each question has a set of expected entities. After retrieval, the system extracts entity names from the results and computes precision, recall, and F1 against the expected set. A question is marked "correct" if recall reaches at least 50% -- meaning the system found at least half of the expected entities:</p>
+
+<pre><code class="language-python">def evaluate_retrieval(retrieval_func, questions=None):
+    questions = questions or BENCHMARK_QUESTIONS
+    results: list[BenchmarkResult] = []
+
+    for q in questions:
+        retrieval_result = retrieval_func(q["question"])
+        found_entities = _extract_entities_from_result(
+            retrieval_result.get("graph_data", []), q.get("key_field")
+        )
+
+        expected = set(e.lower() for e in q["expected_entities"])
+        found = set(e.lower() for e in found_entities)
+
+        tp = len(expected &amp; found)
+        precision = tp / len(found) if found else 0
+        recall = tp / len(expected) if expected else 0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) &gt; 0 else 0
+
+        results.append(BenchmarkResult(
+            question_id=q["id"], question=q["question"],
+            question_type=q["type"],
+            expected=list(expected), found=list(found),
+            precision=precision, recall=recall, f1=f1,
+            correct=recall &gt;= 0.5,
+        ))
+
+    # Aggregate by question type
+    single_hop = [r for r in results if r.question_type == "single_hop"]
+    multi_hop = [r for r in results if r.question_type == "multi_hop"]
+
+    return {
+        "overall_accuracy": sum(1 for r in results if r.correct) / len(results),
+        "single_hop_accuracy": sum(1 for r in single_hop if r.correct) / len(single_hop),
+        "multi_hop_accuracy": sum(1 for r in multi_hop if r.correct) / len(multi_hop),
+        "avg_f1": sum(r.f1 for r in results) / len(results),
+    }</code></pre>
+
+        <h3>Results and Analysis</h3>
+
+        <p>The evaluation produces separate accuracy numbers for single-hop and multi-hop questions, enabling direct comparison with the thesis results. In the thesis, the graph-native RAG system achieved <strong>91.67% overall accuracy</strong> on scientific workflow provenance questions, with notably higher accuracy on multi-hop questions compared to a vector-only baseline.</p>
+
+        <p>AgriSage targets comparable performance in the agricultural domain. The key factors that determine accuracy are:</p>
+
+        <p><strong>Single-hop questions</strong> rely entirely on the Cypher generator producing the correct traversal pattern. With the schema-aware prompting and domain-specific few-shot examples, these are highly reliable: the patterns are simple and well-represented in the examples.</p>
+
+        <p><strong>Multi-hop questions</strong> depend on three components working together: the decomposer correctly identifying the sub-questions, the Cypher generator producing valid queries for each sub-question, and the context enrichment successfully threading entity names from earlier sub-questions into later ones. Each component introduces a failure mode, but the rule-based fallbacks at each stage provide resilience.</p>
+
+        <p><strong>The comparison question</strong> (ID 9: "Compare treatments for powdery mildew on wheat vs. grapes") is the hardest category. It requires two parallel retrieval chains, one per crop, and an implicit comparison operation. This is where the ReAct decomposition provides the most value -- it breaks the comparison into two independent sub-questions that can be executed separately and aggregated.</p>
+
+        <hr>
+
+        <h2>Lessons Learned</h2>
+
+        <p>Building AgriSage reinforced several architectural principles from the thesis and surfaced new domain-specific insights:</p>
+
+        <p><strong>1. Schema design is the hardest part.</strong> Getting the node types, relationship types, and property models right took more iterations than any other component. The initial design treated dosage as a property of Treatment nodes. This broke immediately when we needed context-specific dosages (different rates for tomatoes vs. grapes). Promoting parameters to first-class nodes was the fix, but it required changes across the ingestion pipeline, the Cypher templates, and the few-shot examples.</p>
+
+        <p><strong>2. Rule-based fallbacks are not optional.</strong> Every LLM-dependent component (entity extraction, query decomposition, Cypher generation, response generation) has a deterministic fallback. This was a lesson from the thesis: during development, LLM APIs are unreliable -- rate limits, timeouts, model updates that change output formats. The rule-based paths keep the system functional and testable regardless of LLM availability.</p>
+
+        <p><strong>3. Few-shot examples must match the schema exactly.</strong> Early iterations used Cypher examples that did not precisely match the schema (using <code>AFFECTS</code> instead of <code>SUSCEPTIBLE_TO</code>, for instance). The LLM would then generate queries using the wrong relationship types, producing empty results. The fix was obvious in hindsight: derive the few-shot examples from the same schema definition that the rest of the system uses.</p>
+
+        <p><strong>4. Context enrichment between sub-questions is critical.</strong> Without it, later sub-questions in a decomposition plan generate generic queries that miss the specific entities identified in earlier steps. The simple approach of injecting entity names from prior results into the question text is surprisingly effective.</p>
+
+        <p><strong>5. Transparency builds trust.</strong> Showing users the Cypher queries, the decomposition plan, and the source citations is not a debugging convenience -- it is a core feature. Agricultural professionals need to verify that the system is reasoning correctly before they act on its recommendations.</p>
+
+        <hr>
+
+        <h2>Connection to PhD Research</h2>
+
+        <p>AgriSage is a deliberate bridge between my Master's thesis and the research directions I intend to pursue in a PhD program. The thesis demonstrated that graph-native RAG outperforms vector-only approaches for multi-hop reasoning in the scientific workflow domain. AgriSage validates that the same architecture transfers effectively to a new domain with a different knowledge structure.</p>
+
+        <p>Three open research questions emerged from this work that I plan to investigate further:</p>
+
+        <p><strong>Automated schema evolution.</strong> The current schema is manually designed. As new agricultural documents are ingested, new entity types and relationships may need to be added. How can the system detect schema gaps and suggest extensions automatically?</p>
+
+        <p><strong>Cross-domain transfer of graph-native RAG.</strong> AgriSage reuses the thesis architecture with a domain-specific schema and few-shot examples. What is the minimum set of domain-specific adaptations required to transfer graph-native RAG to a new domain? Can we build a meta-framework that takes a domain schema and automatically generates the decomposition rules, Cypher templates, and few-shot examples?</p>
+
+        <p><strong>Evaluation beyond entity recall.</strong> The current benchmark measures entity-level recall and precision. But for practical agricultural advice, what matters is whether the <em>recommendation</em> is correct and safe -- not just whether the right entities appear in the output. Developing evaluation metrics that capture recommendation quality, safety, and actionability is an important open problem.</p>
+
+        <p>These questions sit at the intersection of knowledge graphs, retrieval-augmented generation, and domain-specific AI -- exactly the space where I see the most impactful research opportunities.</p>
+
+        <hr>
+
+        <h2>Conclusion</h2>
+
+        <p>Over these three posts, we have walked through the complete AgriSage system:</p>
+
+        <ul>
+          <li><strong>Part 1</strong>: Why graph-native retrieval is necessary for agricultural knowledge, the knowledge graph schema design, and the document ingestion pipeline that populates it.</li>
+          <li><strong>Part 2</strong>: The ReAct-based query decomposition, schema-aware Cypher generation with domain-specific few-shot examples, and the hybrid graph+vector retrieval strategy.</li>
+          <li><strong>Part 3</strong>: The conversational interface with session management and source citations, the evaluation framework with its single-hop vs. multi-hop benchmark, and the lessons learned.</li>
+        </ul>
+
+        <p>The central claim of this project -- and of the thesis work it extends -- is straightforward: when your data has structure, your retrieval should respect that structure. Vector search is a powerful tool, but it is the wrong tool for multi-hop reasoning over explicit relationships. A knowledge graph paired with schema-aware query generation provides the structural guarantees that multi-hop agricultural questions demand.</p>
+
+        <p>AgriSage demonstrates this in a practical domain where the stakes are real: the advice a farmer receives about pesticide dosages, application intervals, and treatment contraindications must be accurate, specific, and traceable to its source. Graph-native RAG delivers on all three.</p>
+
+        <hr>
+
+        <p><em>The complete source code for AgriSage is organized as a Python package under <code>src/agrisage/</code>, with modules for ingestion, knowledge graph management, retrieval, conversational interface, and evaluation. The project uses FastAPI for the backend API and Streamlit for the frontend interface.</em></p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-rag-pipeline.html">&larr; Part 2: RAG Pipeline</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

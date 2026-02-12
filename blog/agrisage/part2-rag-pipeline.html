@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building AgriSage: RAG Pipeline with Graph-Native Retrieval (Part 2) — AgriSage Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building AgriSage: RAG Pipeline with Graph-Native Retrieval (Part 2)</h1>
+        <p class="meta">AgriSage Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series on building AgriSage. <a href="part1-knowledge-graph.html">Part 1</a> covered the motivation, knowledge graph schema, and ingestion pipeline. <a href="part3-conversational.html">Part 3</a> covers the conversational interface and evaluation.</em></p>
+
+        <hr>
+
+        <h2>Recap</h2>
+
+        <p>In Part 1, we established why graph-native retrieval is essential for agricultural knowledge: multi-hop questions about crops, diseases, treatments, and dosages require traversing explicit relationships, not just finding semantically similar text chunks. We designed a knowledge graph schema with seven node types and seven relationship types, and built an ingestion pipeline that transforms agricultural documents into structured graph data in Neo4j.</p>
+
+        <p>Now we turn to the core of AgriSage: the retrieval pipeline. When a user asks a natural language question, how does the system decide what to retrieve, generate the right Cypher queries, and assemble a coherent answer from potentially multiple graph traversals?</p>
+
+        <hr>
+
+        <h2>Retrieval Pipeline Overview</h2>
+
+        <p>The retrieval pipeline has four stages, each handling a distinct responsibility:</p>
+
+        <ol>
+          <li><strong>Complexity Detection</strong>: Classify the question as single-hop or multi-hop.</li>
+          <li><strong>Query Decomposition</strong> (multi-hop only): Break the question into ordered sub-questions with dependencies.</li>
+          <li><strong>Cypher Generation</strong>: Translate each (sub-)question into a schema-aware Cypher query.</li>
+          <li><strong>Execution and Fallback</strong>: Run queries against Neo4j; fall back to ChromaDB vector search if the graph returns empty.</li>
+        </ol>
+
+        <p>Let us walk through each stage in detail.</p>
+
+        <hr>
+
+        <h2>Stage 1: Complexity Detection</h2>
+
+        <p>Not every question needs multi-hop reasoning. "What pests affect tomatoes?" is a single traversal: <code>(Crop)-[:SUSCEPTIBLE_TO]-&gt;(Pest)</code>. Decomposing it into sub-questions would add latency without improving accuracy. The <code>QueryDecomposer</code> first classifies the question to determine the right strategy.</p>
+
+        <p>Classification uses two signals:</p>
+
+        <p><strong>Explicit complexity markers</strong> -- phrases like "and also," "compare," "furthermore," or "considering" that indicate compound questions:</p>
+
+<pre><code class="language-python">COMPLEXITY_KEYWORDS = [
+    "and also", "furthermore", "in addition", "as well as",
+    "compare", "difference between", "which is better",
+    "what are the stages and treatments",
+    "schedule and dosage", "considering",
+]</code></pre>
+
+        <p><strong>Entity type counting</strong> -- if the question references three or more distinct entity types (crop, threat, treatment, growth stage), it almost certainly requires multi-hop traversal:</p>
+
+<pre><code class="language-python">def _detect_complexity(self, question: str) -&gt; bool:
+    q = question.lower()
+
+    if any(kw in q for kw in self.COMPLEXITY_KEYWORDS):
+        return True
+
+    entity_types_found = 0
+    crop_words = ["crop", "tomato", "wheat", "maize", "grape", "rice", "potato"]
+    threat_words = ["pest", "disease", "blight", "mildew", "wilt", "aphid", "mite"]
+    treatment_words = ["treatment", "spray", "fungicide", "dosage", "apply", "organic"]
+    stage_words = ["stage", "growth", "flowering", "ripening", "vegetative"]
+
+    if any(w in q for w in crop_words):
+        entity_types_found += 1
+    if any(w in q for w in threat_words):
+        entity_types_found += 1
+    if any(w in q for w in treatment_words):
+        entity_types_found += 1
+    if any(w in q for w in stage_words):
+        entity_types_found += 1
+
+    return entity_types_found &gt;= 3</code></pre>
+
+        <p>This threshold of three entity types maps directly to what we observed in the thesis: questions requiring two or more graph hops almost always reference three or more entity categories. The threshold keeps false positives low -- a question about "wheat diseases" touches only two categories and routes correctly to the simple path.</p>
+
+        <hr>
+
+        <h2>Stage 2: ReAct Query Decomposition</h2>
+
+        <p>For complex questions, AgriSage uses the <strong>ReAct (Reasoning + Acting) pattern</strong> to decompose the original question into a sequence of simpler sub-questions. Each sub-question targets a single graph traversal pattern, and later sub-questions can depend on the results of earlier ones.</p>
+
+        <p>The decomposition produces a <code>DecompositionPlan</code> -- a structured object that tracks the original question, the ordered sub-questions, their dependencies, and their execution status:</p>
+
+<pre><code class="language-python">@dataclass
+class SubQuestion:
+    id: int
+    question: str
+    depends_on: list[int] = field(default_factory=list)
+    cypher: str = ""
+    result: Any = None
+    status: str = "pending"  # pending, executing, completed, failed
+
+@dataclass
+class DecompositionPlan:
+    original_question: str
+    is_complex: bool
+    sub_questions: list[SubQuestion] = field(default_factory=list)
+    reasoning: str = ""</code></pre>
+
+        <h3>LLM-Based Decomposition</h3>
+
+        <p>When an LLM is available, the decomposer sends a structured prompt that includes the graph schema and asks the model to produce a JSON plan:</p>
+
+<pre><code class="language-python">prompt = f"""You are decomposing a complex agricultural question into simpler sub-questions
+that can be answered by querying a knowledge graph.
+
+The knowledge graph contains: Crops, Pests, Diseases, Treatments, GrowthStages, Parameters.
+Relationships: SUSCEPTIBLE_TO, TREATED_BY, HAS_PARAMETER, HAS_STAGE, REQUIRES_TREATMENT.
+
+Question: {question}
+
+Decompose into 2-4 sub-questions. Each sub-question should be answerable with a single
+graph traversal pattern. Later sub-questions can depend on earlier results.
+
+Return JSON:
+{{
+    "reasoning": "explanation of decomposition strategy",
+    "sub_questions": [
+        {{"id": 0, "question": "...", "depends_on": []}},
+        {{"id": 1, "question": "...", "depends_on": [0]}}
+    ]
+}}"""</code></pre>
+
+        <p>For the question "What treatments and dosages are recommended for late blight on tomatoes during flowering?", the LLM might produce:</p>
+
+<pre><code class="language-json">{
+    "reasoning": "This requires finding treatments for a specific disease on a specific crop, then getting dosage parameters, and also checking growth stage relevance.",
+    "sub_questions": [
+        {"id": 0, "question": "What treatments exist for late blight on tomatoes?", "depends_on": []},
+        {"id": 1, "question": "What is the relevant growth stage for tomatoes during flowering?", "depends_on": []},
+        {"id": 2, "question": "What are the dosage parameters for the identified treatments?", "depends_on": [0]}
+    ]
+}</code></pre>
+
+        <p>Sub-questions 0 and 1 have no dependencies and can be thought of as parallel. Sub-question 2 depends on sub-question 0 because it needs to know which treatments to look up dosages for.</p>
+
+        <h3>Rule-Based Fallback</h3>
+
+        <p>When no LLM is available, the decomposer uses a rule-based strategy that pattern-matches against common multi-hop structures in agricultural queries. It detects crop names, threat names, and query intent (treatment, growth stage, dosage), then generates an appropriate sequence of sub-questions:</p>
+
+<pre><code class="language-python">def _rule_based_decompose(self, question: str) -&gt; DecompositionPlan:
+    q = question.lower()
+    sub_questions: list[SubQuestion] = []
+    crop = next((c.title() for c in crops if c in q), None)
+    threat = next((v for k, v in threats.items() if k in q), None)
+
+    # Step 1: Identify the threat if not named
+    if crop and not threat and has_treatment:
+        sub_questions.append(SubQuestion(
+            id=0, question=f"What pests and diseases affect {crop}?"
+        ))
+
+    # Step 2: Find treatments
+    if threat or has_treatment:
+        sub_questions.append(SubQuestion(
+            id=len(sub_questions),
+            question=f"What treatments are available for {target}?",
+            depends_on=[0] if len(sub_questions) &gt; 0 else [],
+        ))
+
+    # Step 3: Get dosage parameters
+    if has_param:
+        sub_questions.append(SubQuestion(
+            id=len(sub_questions),
+            question="What are the dosage parameters for the identified treatment?",
+            depends_on=[i for i in range(len(sub_questions))],
+        ))
+    return DecompositionPlan(...)</code></pre>
+
+        <p>This rule-based path covers the most common multi-hop patterns in agricultural queries and provides a reliable fallback when LLM decomposition is unavailable or fails.</p>
+
+        <hr>
+
+        <h2>Stage 3: Schema-Aware Cypher Generation</h2>
+
+        <p>Each sub-question (or the original question, for simple queries) must be translated into a Cypher query that respects the knowledge graph schema. The <code>CypherGenerator</code> uses <strong>few-shot prompting</strong> with domain-specific examples to produce accurate queries.</p>
+
+        <h3>Domain-Specific Few-Shot Examples</h3>
+
+        <p>AgriSage defines three agricultural domains, each with its own set of few-shot examples:</p>
+
+<pre><code class="language-python">CROP_PROTECTION = DomainConfig(
+    name="crop_protection",
+    description="Pest and disease management, spraying guidelines, treatment protocols",
+    few_shot_examples=[
+        {
+            "question": "What treatments are available for late blight on tomatoes?",
+            "cypher": (
+                "MATCH (c:Crop {name: 'Tomato'})-[:SUSCEPTIBLE_TO]-&gt;"
+                "(d:Disease {name: 'Late Blight'})-[:TREATED_BY]-&gt;(t:Treatment) "
+                "RETURN t.name, t.type, t.application_method"
+            ),
+        },
+        {
+            "question": "What is the recommended dosage for copper fungicide on grapes?",
+            "cypher": (
+                "MATCH (t:Treatment {name: 'Copper Fungicide'})-[:HAS_PARAMETER]-&gt;"
+                "(p:Parameter) WHERE p.context CONTAINS 'grape' "
+                "RETURN t.name, p.name, p.value, p.unit"
+            ),
+        },
+    ],
+)</code></pre>
+
+        <p>The prompt sent to the LLM includes the full graph schema description, the relevant few-shot examples, and a set of generation rules:</p>
+
+<pre><code class="language-python">def _build_prompt(self, question: str, domain_config: DomainConfig | None) -&gt; str:
+    return f"""You are an expert at generating Neo4j Cypher queries for an
+agricultural knowledge graph.
+
+GRAPH SCHEMA:
+{GRAPH_SCHEMA_DESCRIPTION}
+
+EXAMPLES:
+{examples_block}
+
+RULES:
+1. Use MATCH patterns that follow the schema relationships exactly.
+2. Use parameters ($param) for user-supplied values when possible.
+3. Always RETURN meaningful aliases.
+4. For multi-hop queries, chain MATCH patterns.
+5. Use OPTIONAL MATCH for data that might not exist.
+
+Question: {question}
+
+Return a JSON object with:
+- "cypher": the Cypher query string
+- "params": dict of parameter values
+- "explanation": one-sentence explanation of the query logic
+"""</code></pre>
+
+        <p>Including the full schema in every prompt is a deliberate choice inherited from the thesis architecture. It prevents schema hallucination -- the LLM cannot invent relationship types like <code>CAUSES</code> or <code>PREVENTS</code> that do not exist in the graph. The few-shot examples further ground the model in the correct Cypher patterns.</p>
+
+        <h3>Rule-Based Cypher Generation</h3>
+
+        <p>When no LLM is available, a keyword-based generator maps common question patterns to Cypher templates. It detects crop names, threat names, and query intent, then selects the appropriate template:</p>
+
+<pre><code class="language-python">@staticmethod
+def _rule_based_generation(question: str) -&gt; dict[str, Any]:
+    q = question.lower()
+    crop = next((c.title() for c in crops if c in q), None)
+    threat = next((v for k, v in threats.items() if k in q), None)
+
+    # Pattern: treatment for threat on crop
+    if threat and crop:
+        return {
+            "cypher": (
+                f"MATCH (c:Crop {{name: '{crop}'}})-[:SUSCEPTIBLE_TO]-&gt;"
+                f"(d {{name: '{threat}'}})-[:TREATED_BY]-&gt;(t:Treatment) "
+                f"OPTIONAL MATCH (t)-[:HAS_PARAMETER]-&gt;(p:Parameter) "
+                f"RETURN t.name AS treatment, t.type AS type, "
+                f"collect({{param: p.name, value: p.value, unit: p.unit}}) AS parameters"
+            ),
+            "params": {},
+            "explanation": f"Find treatments for {threat} on {crop}",
+        }
+    # ... additional patterns for threats, growth stages, organic treatments</code></pre>
+
+        <p>The system also provides a library of reusable Cypher templates for the most common traversal patterns, such as the full multi-hop treatment chain:</p>
+
+<pre><code class="language-python">"multi_hop_treatment_chain": {
+    "description": "Full chain: crop -&gt; threat -&gt; treatment -&gt; parameters",
+    "template": (
+        "MATCH path = (c:Crop {name: $crop})-[:SUSCEPTIBLE_TO]-&gt;(threat)"
+        "-[:TREATED_BY]-&gt;(t:Treatment)-[:HAS_PARAMETER]-&gt;(p:Parameter) "
+        "RETURN c.name AS crop, threat.name AS threat, "
+        "labels(threat)[0] AS threat_type, "
+        "t.name AS treatment, t.type AS treatment_type, "
+        "p.name AS parameter, p.value AS value, p.unit AS unit"
+    ),
+    "params": ["crop"],
+},</code></pre>
+
+        <hr>
+
+        <h2>Stage 4: Execution, Context Enrichment, and Fallback</h2>
+
+        <h3>Graph Execution with Dependency Ordering</h3>
+
+        <p>The <code>GraphRetriever</code> executes the decomposition plan by running sub-questions in dependency order. It maintains a set of completed sub-question IDs and only executes a sub-question when all its dependencies have been resolved:</p>
+
+<pre><code class="language-python">def _execute_complex(self, plan: DecompositionPlan, domain: str | None) -&gt; dict[str, Any]:
+    executed: set[int] = set()
+
+    for _ in range(max_iterations):
+        if len(executed) == len(plan.sub_questions):
+            break
+
+        for sq in plan.sub_questions:
+            if sq.id in executed:
+                continue
+            if not all(dep in executed for dep in sq.depends_on):
+                continue
+
+            enriched_question = self._enrich_with_context(sq, plan)
+            gen_result = self.cypher_generator.generate(enriched_question, domain)
+            records = self.neo4j_client.execute_cypher(gen_result["cypher"], ...)
+            sq.status = "completed"
+            sq.result = records
+            executed.add(sq.id)
+
+    return {"answer_data": all_results, "plan": plan, ...}</code></pre>
+
+        <h3>Context Enrichment Between Sub-Questions</h3>
+
+        <p>A critical feature is <strong>context enrichment</strong>: when a sub-question depends on earlier results, the system injects the relevant entity names from those results into the question text. This allows the Cypher generator to produce more targeted queries:</p>
+
+<pre><code class="language-python">@staticmethod
+def _enrich_with_context(sq: SubQuestion, plan: DecompositionPlan) -&gt; str:
+    context_parts: list[str] = []
+    for dep_id in sq.depends_on:
+        dep = next((s for s in plan.sub_questions if s.id == dep_id), None)
+        if dep and dep.result:
+            names = set()
+            for record in dep.result[:5]:
+                for key in ["name", "treatment", "stage", "threat"]:
+                    if key in record and record[key]:
+                        names.add(str(record[key]))
+            if names:
+                context_parts.append(f"From previous step: {', '.join(names)}")
+    if context_parts:
+        return f"{sq.question} (Context: {'; '.join(context_parts)})"
+    return sq.question</code></pre>
+
+        <p>For example, if sub-question 0 ("What treatments exist for late blight on tomatoes?") returns <code>["Copper Fungicide", "Mancozeb"]</code>, then sub-question 2 ("What are the dosage parameters?") becomes "What are the dosage parameters? (Context: From previous step: Copper Fungicide, Mancozeb)". This enriched question gives the Cypher generator the concrete entity names it needs.</p>
+
+        <h3>Hybrid Retrieval: Vector Fallback</h3>
+
+        <p>The <code>HybridRetriever</code> wraps the graph retriever and adds a ChromaDB vector fallback. The strategy is graph-first: vector search only activates when the graph returns empty results.</p>
+
+<pre><code class="language-python">class HybridRetriever:
+    def retrieve(self, question: str, domain: str | None = None, ...) -&gt; dict[str, Any]:
+        # Primary: graph-native retrieval
+        graph_result = self.graph_retriever.retrieve(question, domain)
+
+        result = {
+            "graph_data": graph_result["answer_data"],
+            "vector_data": [],
+            "retrieval_sources": ["graph"],
+        }
+
+        # Fallback: vector retrieval if graph returned empty
+        if use_vector_fallback and not graph_result["answer_data"]:
+            vector_results = self.vector_retriever.search(question, n_results=5)
+            if vector_results:
+                result["vector_data"] = vector_results
+                result["retrieval_sources"].append("vector")
+
+        return result</code></pre>
+
+        <p>This is not a naive "merge everything" strategy. The graph is always preferred because it provides structured, relationship-aware results. Vector search only fills the gap for questions that do not map cleanly to graph patterns -- for instance, free-text questions about best practices that are not captured as explicit entities in the graph.</p>
+
+        <hr>
+
+        <h2>Putting It All Together: A Worked Example</h2>
+
+        <p>Let us trace the full pipeline for a concrete question:</p>
+
+        <p><strong>User asks:</strong> "What treatments and dosages are recommended for late blight on tomatoes during flowering?"</p>
+
+        <p><strong>Step 1 -- Complexity Detection:</strong> The question references a crop (tomato), a disease (late blight), treatments, dosages, and a growth stage (flowering). That is four entity types -- well above the threshold of three. The question is classified as complex.</p>
+
+        <p><strong>Step 2 -- Decomposition:</strong> The ReAct decomposer produces three sub-questions:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Sub-question</th>
+              <th>Depends On</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>0</td>
+              <td>What treatments exist for late blight on tomatoes?</td>
+              <td>--</td>
+            </tr>
+            <tr>
+              <td>1</td>
+              <td>What is the flowering stage for tomatoes?</td>
+              <td>--</td>
+            </tr>
+            <tr>
+              <td>2</td>
+              <td>What are the dosage parameters for the identified treatments?</td>
+              <td>0</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p><strong>Step 3 -- Cypher Generation and Execution:</strong></p>
+
+        <p>Sub-question 0 generates:</p>
+
+<pre><code class="language-cypher">MATCH (c:Crop {name: 'Tomato'})-[:SUSCEPTIBLE_TO]-&gt;(d:Disease {name: 'Late Blight'})
+      -[:TREATED_BY]-&gt;(t:Treatment)
+RETURN t.name AS treatment, t.type AS type, t.application_method AS method</code></pre>
+
+        <p>Returns: <code>[{treatment: "Copper Fungicide", type: "chemical"}, {treatment: "Mancozeb", type: "chemical"}]</code></p>
+
+        <p>Sub-question 1 generates:</p>
+
+<pre><code class="language-cypher">MATCH (c:Crop {name: 'Tomato'})-[:HAS_STAGE]-&gt;(gs:GrowthStage)
+WHERE gs.name CONTAINS 'Flowering'
+RETURN gs.name AS stage, gs.order AS stage_order, gs.requirements AS requirements</code></pre>
+
+        <p>Returns: <code>[{stage: "Flowering", stage_order: 4, requirements: "Reduce nitrogen, ensure pollination..."}]</code></p>
+
+        <p>Sub-question 2 (enriched with context: "Copper Fungicide, Mancozeb") generates:</p>
+
+<pre><code class="language-cypher">MATCH (t:Treatment)-[:HAS_PARAMETER]-&gt;(p:Parameter)
+WHERE t.name IN ['Copper Fungicide', 'Mancozeb']
+RETURN t.name AS treatment, p.name AS parameter, p.value AS value, p.unit AS unit</code></pre>
+
+        <p>Returns: dosage, interval, and pre-harvest interval parameters for both treatments.</p>
+
+        <p><strong>Step 4 -- Response Generation:</strong> All results are aggregated and passed to the response generator, which synthesizes a natural language answer with specific dosages, application intervals, and source citations.</p>
+
+        <hr>
+
+        <h2>What's Next</h2>
+
+        <p>In <a href="part3-conversational.html">Part 3</a>, we cover how AgriSage transforms raw retrieval results into coherent natural language responses, how the conversational interface manages multi-turn sessions, and how we evaluate the system using a benchmark of 10 agricultural questions split between single-hop and multi-hop categories. We also reflect on lessons learned and the connection to PhD research directions.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-knowledge-graph.html">&larr; Part 1: Knowledge Graph</a>
+        <a href="part3-conversational.html">Part 3: Conversational Interface &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

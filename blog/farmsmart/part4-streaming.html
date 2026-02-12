@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Real-Time Streaming Analytics — FarmSmart Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building FarmSmart &mdash; Real-Time Streaming Analytics</h1>
+        <p class="meta">FarmSmart Series &middot; Part 4 of 6</p>
+      </div>
+      <div class="post-content">
+
+        <h2>Introduction: The Need for Real-Time Processing</h2>
+
+        <p>Imagine you're monitoring a field, and suddenly the soil moisture drops from 20% to 12% in just 30 minutes. This could indicate a broken irrigation pipe or an unexpected water leak. By the time you check the data tomorrow, it might be too late - the crop could already be stressed.</p>
+
+        <p>This is why we need streaming analytics - the ability to process and analyze data as it arrives, not hours or days later. In this part, we'll explore how we built a real-time analytics system that can detect problems, identify trends, and trigger alerts as data flows through the system.</p>
+
+        <h2>The Challenge: Processing Data in Motion</h2>
+
+        <p>Traditional analytics work like this:</p>
+        <ol>
+          <li>Collect data for a period (hour, day, week)</li>
+          <li>Store it in a database</li>
+          <li>Run analysis queries later</li>
+          <li>Generate reports</li>
+        </ol>
+
+        <p>This is called "batch processing" - you process data in batches. It's like taking photos and developing them all at once at the end of the day.</p>
+
+        <p>Streaming analytics is different:</p>
+        <ol>
+          <li>Data arrives continuously</li>
+          <li>We process it immediately as it arrives</li>
+          <li>We generate insights in real-time</li>
+          <li>We can react to problems instantly</li>
+        </ol>
+
+        <p>This is like having a live video feed instead of photos - you see what's happening right now, not what happened hours ago.</p>
+
+        <h2>Why Apache Spark for Streaming?</h2>
+
+        <p>We chose Apache Spark Structured Streaming for several reasons:</p>
+
+        <p><strong>Handles High Volume</strong> - Can process millions of events per second<br>
+        <strong>Fault Tolerant</strong> - If something fails, it can recover and continue<br>
+        <strong>Scalable</strong> - Can distribute processing across multiple machines<br>
+        <strong>Flexible</strong> - Supports complex analytics, not just simple aggregations<br>
+        <strong>Unified API</strong> - Same code works for batch and streaming</p>
+
+        <p>Think of Spark as a factory assembly line that never stops. Data comes in on a conveyor belt, gets processed by different stations (aggregation, anomaly detection, etc.), and results come out the other end continuously.</p>
+
+        <h2>The Streaming Architecture</h2>
+
+        <p>Here's how our streaming system works:</p>
+
+        <p>Data flows continuously through this pipeline. Let's explore each component.</p>
+
+        <h2>Component 1: Reading from Kafka</h2>
+
+        <p>The first step is getting data from Kafka into Spark. We use Spark's Kafka connector, which reads messages from Kafka topics and converts them into Spark DataFrames.</p>
+
+        <h3>Understanding DataFrames</h3>
+
+        <p>A DataFrame is like a spreadsheet in memory. It has:</p>
+        <ul>
+          <li>Rows (each sensor reading)</li>
+          <li>Columns (sensor_id, field_id, metric, value, timestamp)</li>
+          <li>Operations (filter, group, aggregate)</li>
+        </ul>
+
+        <p>Here's what a DataFrame looks like:</p>
+
+<pre><code>+----------+---------+--------------+-------+-------------------+
+|sensor_id |field_id |metric        |value  |timestamp          |
++----------+---------+--------------+-------+-------------------+
+|sensor_001|Field A  |soil_moisture |18.5   |2026-01-23 10:00:00|
+|sensor_002|Field B  |temperature   |22.3   |2026-01-23 10:00:01|
+|sensor_001|Field A  |soil_moisture |18.3   |2026-01-23 10:00:30|
++----------+---------+--------------+-------+-------------------+</code></pre>
+
+        <h3>Reading Streams</h3>
+
+        <p>We read from Kafka like this:</p>
+
+<pre><code class="language-python">stream = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "sensor-readings") \
+    .load()</code></pre>
+
+        <p>This creates a streaming DataFrame. Unlike a regular DataFrame (which has a fixed set of data), a streaming DataFrame continuously receives new data.</p>
+
+        <h3>Parsing Messages</h3>
+
+        <p>Kafka messages are just bytes. We need to parse the JSON:</p>
+
+<pre><code class="language-python"># Parse JSON from Kafka message value
+parsed = stream.select(
+    from_json(col("value").cast("string"), schema).alias("data")
+)</code></pre>
+
+        <p>This converts each message from raw bytes into structured data we can work with.</p>
+
+        <h2>Component 2: Windowed Aggregations</h2>
+
+        <p>One of the most common streaming operations is calculating aggregates over time windows. For example: "What's the average temperature in the last hour?"</p>
+
+        <h3>Understanding Windows</h3>
+
+        <p>A window is a time period. Think of it like a sliding window on a timeline:</p>
+
+<pre><code>Timeline:  |----|----|----|----|----|----|
+Windows:     [--]  [--]  [--]  [--]  [--]</code></pre>
+
+        <p>As time moves forward, the window slides forward too. Each window contains all data points that fall within that time period.</p>
+
+        <h3>Tumbling Windows</h3>
+
+        <p>A tumbling window is like non-overlapping time buckets:</p>
+
+<pre><code>10:00-10:05  | 10:05-10:10  | 10:10-10:15  | 10:15-10:20</code></pre>
+
+        <p>Each 5-minute period is separate. Data from 10:00-10:05 doesn't overlap with 10:05-10:10.</p>
+
+        <p><strong>Use case:</strong> Calculate hourly averages</p>
+
+<pre><code class="language-python"># Group by field and 1-hour windows
+hourly_avg = stream \
+    .groupBy(
+        window("timestamp", "1 hour"),
+        "field_id"
+    ) \
+    .agg(avg("value").alias("avg_value"))</code></pre>
+
+        <p>This gives us the average value for each field in each hour.</p>
+
+        <h3>Sliding Windows</h3>
+
+        <p>A sliding window overlaps with previous windows:</p>
+
+<pre><code>10:00-10:05
+    10:02-10:07
+        10:04-10:09
+            10:06-10:11</code></pre>
+
+        <p>Each window includes some data from the previous window.</p>
+
+        <p><strong>Use case:</strong> Calculate rolling averages</p>
+
+<pre><code class="language-python"># 5-minute window, sliding every 1 minute
+rolling_avg = stream \
+    .groupBy(
+        window("timestamp", "5 minutes", "1 minute"),
+        "field_id"
+    ) \
+    .agg(avg("value").alias("rolling_avg"))</code></pre>
+
+        <p>This gives us a 5-minute average that updates every minute, providing smoother trends.</p>
+
+        <h3>Aggregation Functions</h3>
+
+        <p>We support various aggregations:</p>
+
+        <p><strong>Average</strong> - Mean value over the window</p>
+<pre><code class="language-python">avg("value")</code></pre>
+
+        <p><strong>Sum</strong> - Total value over the window</p>
+<pre><code class="language-python">sum("value")</code></pre>
+
+        <p><strong>Min/Max</strong> - Minimum and maximum values</p>
+<pre><code class="language-python">min("value"), max("value")</code></pre>
+
+        <p><strong>Count</strong> - Number of readings</p>
+<pre><code class="language-python">count("value")</code></pre>
+
+        <h2>Component 3: Anomaly Detection</h2>
+
+        <p>Anomaly detection identifies unusual patterns in data. A sudden spike in temperature or a rapid drop in soil moisture could indicate a problem.</p>
+
+        <h3>Why Anomaly Detection Matters</h3>
+
+        <p>Consider these scenarios:</p>
+        <ul>
+          <li>A sensor malfunctions and starts reporting impossible values</li>
+          <li>A pipe breaks and water usage spikes</li>
+          <li>Weather changes suddenly and temperature drops rapidly</li>
+          <li>Pests or disease cause unusual patterns in crop data</li>
+        </ul>
+
+        <p>Detecting these anomalies early allows farmers to respond quickly.</p>
+
+        <h3>Z-Score Detection</h3>
+
+        <p>Z-score measures how many standard deviations a value is from the mean. Think of it like a bell curve:</p>
+
+<pre><code>        /\
+       /  \
+      /    \
+     /      \
+    /        \</code></pre>
+
+        <p>Most values cluster in the middle (the peak). Values far from the center (the tails) are unusual.</p>
+
+        <p><strong>How it works:</strong></p>
+        <ol>
+          <li>Calculate the mean and standard deviation of recent values</li>
+          <li>For each new value, calculate its z-score</li>
+          <li>If z-score &gt; threshold (e.g., 3), flag as anomaly</li>
+        </ol>
+
+<pre><code class="language-python"># Calculate z-score
+mean = windowed_data.agg(avg("value")).collect()[0][0]
+std = windowed_data.agg(stddev("value")).collect()[0][0]
+z_score = abs((value - mean) / std)
+
+if z_score &gt; 3.0:
+    flag_as_anomaly()</code></pre>
+
+        <p><strong>Example:</strong></p>
+        <ul>
+          <li>Recent temperatures: 20&deg;C, 21&deg;C, 20&deg;C, 22&deg;C, 19&deg;C</li>
+          <li>Mean: 20.4&deg;C, Standard deviation: 1.02&deg;C</li>
+          <li>New reading: 25&deg;C</li>
+          <li>Z-score: (25 - 20.4) / 1.02 = 4.5</li>
+          <li>Since 4.5 &gt; 3.0, this is flagged as an anomaly</li>
+        </ul>
+
+        <h3>Threshold Detection</h3>
+
+        <p>Sometimes we know what values are reasonable. Soil moisture should be between 15% and 80%. Anything outside this range is suspicious.</p>
+
+<pre><code class="language-python">if value &lt; min_threshold or value &gt; max_threshold:
+    flag_as_anomaly()</code></pre>
+
+        <p>This is simpler than z-score but requires knowing the expected ranges for each metric.</p>
+
+        <h3>EWMA (Exponentially Weighted Moving Average)</h3>
+
+        <p>EWMA gives more weight to recent values. It's like having a memory that fades over time - recent events matter more than old ones.</p>
+
+        <p><strong>How it works:</strong></p>
+
+<pre><code class="language-python">ewma = alpha * current_value + (1 - alpha) * previous_ewma</code></pre>
+
+        <p>Where alpha (between 0 and 1) controls how much weight recent values get. Higher alpha = more weight on recent values.</p>
+
+        <p>If the current value deviates significantly from the EWMA, it might be an anomaly.</p>
+
+        <h3>Combining Methods</h3>
+
+        <p>We often use multiple methods together.</p>
+
+        <h2>Component 4: Change-Point Detection</h2>
+
+        <p>Change-point detection identifies when a trend changes significantly. For example, soil moisture might be stable around 20% for days, then suddenly start dropping. That change point is important - it might indicate a problem.</p>
+
+        <h3>Why Change Points Matter</h3>
+
+        <p>Change points can indicate:</p>
+        <ul>
+          <li>Equipment failure (sudden change in readings)</li>
+          <li>Environmental changes (weather shifts)</li>
+          <li>Crop stress (gradual decline in health indicators)</li>
+          <li>Irrigation events (sudden increase in moisture)</li>
+        </ul>
+
+        <h3>CUSUM (Cumulative Sum) Method</h3>
+
+        <p>CUSUM accumulates deviations from a target value. If values consistently deviate in one direction, the cumulative sum grows, indicating a change.</p>
+
+        <p><strong>How it works:</strong></p>
+        <ol>
+          <li>Calculate deviation from target (or mean)</li>
+          <li>Accumulate positive and negative deviations separately</li>
+          <li>If cumulative sum exceeds threshold, change point detected</li>
+        </ol>
+
+<pre><code class="language-python"># Simplified CUSUM
+deviation = value - target
+cumulative_sum += deviation
+
+if abs(cumulative_sum) &gt; threshold:
+    change_point_detected()</code></pre>
+
+        <p><strong>Example:</strong></p>
+        <ul>
+          <li>Target soil moisture: 20%</li>
+          <li>Readings: 20%, 20%, 19%, 18%, 17%, 16%</li>
+          <li>Deviations: 0%, 0%, -1%, -2%, -3%, -4%</li>
+          <li>Cumulative sum: -10%</li>
+          <li>If threshold is 8%, change point detected at reading 5</li>
+        </ul>
+
+        <h3>Simple Change Detection</h3>
+
+        <p>Sometimes we just look at the difference between consecutive values:</p>
+
+<pre><code class="language-python">change = current_value - previous_value
+if abs(change) &gt; threshold:
+    significant_change_detected()</code></pre>
+
+        <p>This is simpler but less robust to noise.</p>
+
+        <h2>Component 5: Event Correlation</h2>
+
+        <p>Events don't happen in isolation. A drop in soil moisture might correlate with increased irrigation activity, or a temperature spike might correlate with weather data.</p>
+
+        <h3>Why Correlation Matters</h3>
+
+        <p>Understanding relationships helps us:</p>
+        <ul>
+          <li>Explain why something happened</li>
+          <li>Predict future events</li>
+          <li>Identify root causes</li>
+          <li>Reduce false alarms</li>
+        </ul>
+
+        <h3>Correlating Sensor Data with Weather</h3>
+
+        <p>We can correlate sensor readings with weather data:</p>
+
+<pre><code class="language-python"># Join sensor data with weather data
+correlated = sensor_stream.join(
+    weather_stream,
+    on=["field_id", "timestamp"],
+    how="inner"
+)</code></pre>
+
+        <p>This lets us answer questions like: "Did the temperature spike because of weather, or is there a sensor problem?"</p>
+
+        <h3>Correlating Anomalies with Events</h3>
+
+        <p>When we detect an anomaly, we look for related events:</p>
+
+<pre><code class="language-python"># Find events near anomaly time
+related_events = events.filter(
+    (col("timestamp") &gt;= anomaly_time - interval("1 hour")) &amp;
+    (col("timestamp") &lt;= anomaly_time + interval("1 hour"))
+)</code></pre>
+
+        <p>This helps explain why the anomaly occurred.</p>
+
+        <h2>Real-World Applications: Streaming Jobs</h2>
+
+        <p>We've built several streaming jobs that combine these techniques:</p>
+
+        <h3>Drought Detection Job</h3>
+
+        <p>This job continuously monitors soil moisture and detects drought conditions.</p>
+
+        <p><strong>How it works:</strong></p>
+        <ol>
+          <li>Calculate average soil moisture over 1-hour windows</li>
+          <li>Check if average is below crop-specific threshold</li>
+          <li>If below threshold for more than 2 hours, trigger drought alert</li>
+          <li>Alert includes field location and recommended actions</li>
+        </ol>
+
+        <h3>Irrigation Efficiency Job</h3>
+
+        <p>This job calculates how efficiently irrigation systems are working.</p>
+
+        <p><strong>How it works:</strong></p>
+        <ol>
+          <li>Monitor water usage events (when irrigation runs)</li>
+          <li>Track corresponding soil moisture changes</li>
+          <li>Calculate efficiency: (moisture increase) / (water used)</li>
+          <li>Alert if efficiency is unusually low (might indicate leaks or poor distribution)</li>
+        </ol>
+
+        <h3>NDVI Stress Detection</h3>
+
+        <p>NDVI (Normalized Difference Vegetation Index) measures plant health. This job detects when plants are stressed.</p>
+
+        <p><strong>How it works:</strong></p>
+        <ol>
+          <li>Compare current NDVI to historical baseline</li>
+          <li>If NDVI drops, check soil moisture</li>
+          <li>If moisture is low, likely water stress</li>
+          <li>If moisture is normal, investigate other causes (disease, pests, nutrients)</li>
+        </ol>
+
+        <h2>Performance and Scalability</h2>
+
+        <p>Streaming systems need to handle high volumes efficiently. Here's how we optimize:</p>
+
+        <h3>Checkpointing</h3>
+
+        <p>Spark uses checkpoints to recover from failures. It periodically saves the current state, so if the system crashes, it can resume from the last checkpoint instead of starting over.</p>
+
+        <p>Think of it like saving a video game - if you crash, you don't lose all progress, just since the last save.</p>
+
+        <h3>Parallel Processing</h3>
+
+        <p>Spark distributes work across multiple cores or machines:</p>
+
+<pre><code>Data Stream &rarr; Split into Partitions &rarr; Process in Parallel &rarr; Combine Results</code></pre>
+
+        <p>This allows us to process more data faster.</p>
+
+        <h3>Backpressure Handling</h3>
+
+        <p>If data arrives faster than we can process it, we need backpressure - slowing down the data source or buffering data.</p>
+
+        <p>Spark handles this automatically by:</p>
+        <ul>
+          <li>Buffering data in Kafka</li>
+          <li>Adjusting processing rate</li>
+          <li>Alerting if backlog grows too large</li>
+        </ul>
+
+        <h2>Monitoring Streaming Jobs</h2>
+
+        <p>We monitor streaming jobs to ensure they're working correctly:</p>
+
+        <p><strong>Throughput</strong> - How many messages per second are we processing?<br>
+        <strong>Latency</strong> - How long does it take from message arrival to result?<br>
+        <strong>Backlog</strong> - Are we keeping up, or is data piling up?<br>
+        <strong>Errors</strong> - Are there processing failures?</p>
+
+        <p>If throughput drops or latency increases, we know something is wrong.</p>
+
+        <h2>Testing Streaming Systems</h2>
+
+        <p>Testing streaming systems is challenging because data is always moving. We use several strategies:</p>
+
+        <p><strong>Unit Tests</strong> - Test individual functions with sample data<br>
+        <strong>Integration Tests</strong> - Test with a local Kafka and Spark setup<br>
+        <strong>Performance Tests</strong> - Measure throughput and latency<br>
+        <strong>Chaos Tests</strong> - Intentionally fail components to test recovery</p>
+
+        <h2>What's Next?</h2>
+
+        <p>In Part 5, we'll explore the conversational engine - how we make the system interactive and user-friendly. We'll cover:</p>
+        <ul>
+          <li>Building a chat interface</li>
+          <li>Managing conversation context</li>
+          <li>Using large language models for natural responses</li>
+          <li>Generating explanations and recommendations</li>
+          <li>Creating a seamless user experience</li>
+        </ul>
+
+        <h2>Key Takeaways</h2>
+
+        <ol>
+          <li><strong>Streaming is different from batch</strong> - We process data as it arrives, not in batches.</li>
+          <li><strong>Windows enable time-based analysis</strong> - Tumbling and sliding windows let us calculate aggregates over time periods.</li>
+          <li><strong>Anomaly detection finds problems early</strong> - Multiple methods (z-score, threshold, EWMA) help identify unusual patterns.</li>
+          <li><strong>Change-point detection spots trends</strong> - CUSUM and simple change detection identify when conditions shift.</li>
+          <li><strong>Correlation provides context</strong> - Understanding relationships between events helps explain anomalies.</li>
+          <li><strong>Real-time jobs solve real problems</strong> - Drought detection, irrigation efficiency, and stress detection provide actionable insights.</li>
+          <li><strong>Performance matters</strong> - Checkpointing, parallel processing, and backpressure handling ensure the system scales.</li>
+        </ol>
+
+        <p>The streaming analytics layer transforms raw sensor data into actionable intelligence. It's the difference between knowing what happened yesterday and knowing what's happening right now. In the next part, we'll see how we make all of this accessible through natural conversation.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part3-nlp.html">&larr; Part 3: NLP &amp; Query Translation</a>
+        <a href="part5-conversational.html">Part 5: Conversational Engine &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
