@@ -30,17 +30,17 @@
       </div>
       <div class="post-content">
 
-        <p>A system that generates robot task plans from natural language is impressive. A system that generates plans, explains them in plain English, and then lets the farmer modify, approve, or reject them before any robot moves &mdash; that is a system you can actually deploy.</p>
+        <p>A system that generates robot task plans from natural language is cool. A system that generates plans, explains them in plain English, and then lets the farmer modify, approve, or reject them before any robot moves — that's a system you can actually deploy.</p>
 
         <p>This final post in the CropCommand series covers the human-in-the-loop feedback architecture: how plans are explained, how user feedback is captured and applied, and how the system maintains and calibrates trust between human operators and autonomous machines.</p>
 
         <h2>Why Human-in-the-Loop?</h2>
 
-        <p>The research literature on autonomous systems is clear on one point: full autonomy without human oversight leads to brittle deployments and catastrophic edge cases. This is especially true in agriculture, where the consequences of errors are measured in lost harvests, contaminated organic fields, and wasted chemicals worth thousands of dollars per application.</p>
+        <p>Full autonomy without human oversight leads to brittle deployments and catastrophic edge cases. This is especially true in agriculture, where the consequences of errors are measured in lost harvests, contaminated organic fields, and wasted chemicals worth thousands of dollars per application.</p>
 
-        <p>CropCommand treats every generated plan as a <em>proposal</em>, not a command. The pipeline from <a href="part1-nl-to-plans.html">Part 1</a> (parsing and decomposition) and <a href="part2-constraints.html">Part 2</a> (constraint evaluation and scheduling) produces a validated plan, but that plan does not execute until a human says "go." And between generation and approval, the system provides a rich feedback interface that lets the operator understand, question, and reshape the plan.</p>
+        <p>CropCommand treats every generated plan as a <em>proposal</em>, not a command. Think of it like having a co-pilot who can grab the wheel if you're about to do something dumb — except here, the human is the one with final say. The pipeline from <a href="part1-nl-to-plans.html">Part 1</a> (parsing and decomposition) and <a href="part2-constraints.html">Part 2</a> (constraint evaluation and scheduling) produces a validated plan, but that plan doesn't execute until a human says "go."
 
-        <p>This is not a limitation of the system's intelligence. It is a feature of its design philosophy.</p>
+        <p>Between generation and approval, the system provides a rich feedback interface that lets the operator understand, question, and reshape the plan. That's not a limitation — it's a feature.</p>
 
         <h2>The Feedback Architecture</h2>
 
@@ -64,7 +64,7 @@
           <li><strong>MODIFY_ROBOT:</strong> The farmer wants a different robot assigned (e.g., "Use the drone instead of the ground sprayer").</li>
           <li><strong>MODIFY_TIMING:</strong> The farmer wants to adjust when the plan executes (e.g., "Delay by 30 minutes" or "Start at dawn").</li>
           <li><strong>MODIFY_ROUTE:</strong> The farmer wants to change the spatial plan (e.g., "Also avoid the section near the creek" or "Use a spiral pattern instead").</li>
-          <li><strong>ADD_CONSTRAINT:</strong> The farmer adds a new constraint that the system did not know about (e.g., "The east gate is locked today" or "Don't operate near the beehives").</li>
+          <li><strong>ADD_CONSTRAINT:</strong> The farmer adds a new constraint the system didn't know about (e.g., "The east gate is locked today" or "Don't operate near the beehives").</li>
         </ul>
 
         <h3>The UserFeedback Model</h3>
@@ -77,9 +77,9 @@
     details: str                    # Free-form human explanation
     parameters: Dict[str, Any]     # Structured modification data</code></pre>
 
-        <p>The <code>details</code> field is crucial. It captures the farmer's reasoning in their own words. When they say "I'm rejecting this because the forecast changed and heavy rain is now expected in 30 minutes," that context is preserved in the plan's warning log. It is useful for audit trails, for improving the system over time, and for explaining to other operators why a plan was modified.</p>
+        <p>The <code>details</code> field is crucial. It captures the farmer's reasoning in their own words. When they say "I'm rejecting this because the forecast changed and heavy rain is now expected in 30 minutes," that context is preserved in the plan's warning log. It's useful for audit trails, for improving the system over time, and for explaining to other operators why a plan was modified.</p>
 
-        <p>The <code>parameters</code> dict carries structured data that the handler can act on programmatically. For a MODIFY_TIMING feedback, it might contain <code>{"delay_minutes": 30}</code>. For MODIFY_ROUTE, it might contain <code>{"avoid_zones": ["creek"], "pattern": "spiral"}</code>.</p>
+        <p>The <code>parameters</code> dict carries structured data the handler can act on programmatically. For a MODIFY_TIMING feedback, it might contain <code>{"delay_minutes": 30}</code>. For MODIFY_ROUTE, it might contain <code>{"avoid_zones": ["creek"], "pattern": "spiral"}</code>.</p>
 
         <h2>The Feedback Processing Loop</h2>
 
@@ -117,7 +117,7 @@
 
         return revised</code></pre>
 
-        <p>The key insight is <strong>step 2</strong>: every modification triggers a full re-evaluation of all constraints. When the farmer changes the robot assignment, the new robot might not have the required capability, or it might have a lower wind tolerance, or its battery might be too low. By re-running the constraint engine after every feedback application, the system ensures that modifications do not silently introduce new violations.</p>
+        <p>Here's the interesting part: <strong>step 2</strong>. Every modification triggers a full re-evaluation of all constraints. When the farmer changes the robot assignment, the new robot might not have the required capability, might have a lower wind tolerance, or might be running low on battery. By re-running the constraint engine after every feedback application, the system ensures modifications don't silently introduce new violations.</p>
 
         <h3>How Each Feedback Type Works</h3>
 
@@ -187,9 +187,9 @@
     revised.explanation += " [Route modified per user feedback.]"
     return revised</code></pre>
 
-        <p>The use of <code>set(existing + avoid_zones)</code> ensures that adding the same zone twice does not create duplicates. The pattern update is applied only to tasks that already have a pattern parameter (typically SPRAY and CONFIGURE steps), leaving navigation steps unchanged.</p>
+        <p>The use of <code>set(existing + avoid_zones)</code> ensures adding the same zone twice doesn't create duplicates. The pattern update only applies to tasks that already have a pattern parameter (typically SPRAY and CONFIGURE steps), leaving navigation steps unchanged.</p>
 
-        <p><strong>Add Constraint:</strong> A catch-all for constraints the system did not anticipate. The farmer's constraint is logged as a warning and appended to the explanation:</p>
+        <p><strong>Add Constraint:</strong> A catch-all for constraints the system didn't anticipate. The farmer's constraint is logged as a warning and appended to the explanation:</p>
 
 <pre><code>def _handle_add_constraint(plan, feedback, env):
     revised = plan.model_copy(deep=True)
@@ -198,11 +198,11 @@
     revised.explanation += f" [Constraint added: {constraint_desc}.]"
     return revised</code></pre>
 
-        <p>In the current implementation, user-added constraints are recorded but not automatically enforced (the system does not know how to evaluate an arbitrary natural-language constraint). This is intentional: the constraint is preserved for human review and for potential future automated handling.</p>
+        <p>In the current implementation, user-added constraints are recorded but not automatically enforced — the system doesn't know how to evaluate an arbitrary natural-language constraint. That's intentional: the constraint is preserved for human review and for potential future automated handling.</p>
 
         <h2>Natural Language Plan Explanation</h2>
 
-        <p>The <code>PlanExplainer</code> class transforms structured plan data into human-readable text. This is the bridge between the system's internal representation and the farmer's understanding.</p>
+        <p>The <code>PlanExplainer</code> class transforms structured plan data into human-readable text. This is the bridge between the system's internal representation and what the farmer actually sees and understands.</p>
 
         <h3>Explaining Actions</h3>
 
@@ -301,13 +301,13 @@ def explain_constraint(self, constraint: Constraint) -&gt; str:
 
         <h2>Trust Calibration and Confidence Scoring</h2>
 
-        <p>Trust in autonomous systems is not binary. A farmer might trust the system completely for routine surveys, mostly trust it for spraying operations, but want to review every harvesting plan in detail. CropCommand supports this graduated trust through several mechanisms:</p>
+        <p>Trust in autonomous systems isn't binary. A farmer might trust the system completely for routine surveys, mostly trust it for spraying operations, but want to review every harvesting plan in detail. CropCommand supports this graduated trust through several mechanisms.</p>
 
         <h3>Parser Confidence</h3>
 
-        <p>The <code>IntentParser</code> assigns a confidence score to every parsed command. A clear match (the word "spray" in a spray command) gets 0.85. An ambiguous command that falls through to the NAVIGATE default gets 0.40. This score propagates to the <code>ExecutionPlan.confidence</code> field and is displayed in the plan explanation.</p>
+        <p>The <code>IntentParser</code> assigns a confidence score to every parsed command. A clear match (the word "spray" in a spray command) gets 0.85. An ambiguous command that falls through to the NAVIGATE default gets 0.40. This score propagates to the <code>ExecutionPlan.confidence</code> field and shows up in the plan explanation.</p>
 
-        <p>Low confidence is a signal to the operator: <em>this interpretation might be wrong, please review carefully.</em> The system does not refuse to act on low-confidence commands, but it prominently flags the uncertainty.</p>
+        <p>Low confidence is a signal to the operator: <em>this interpretation might be wrong, please review carefully.</em> The system doesn't refuse to act on low-confidence commands, but it prominently flags the uncertainty.</p>
 
         <h3>Constraint Satisfaction as a Trust Signal</h3>
 
@@ -324,19 +324,19 @@ else:
 
         <h3>Explanation as a Trust-Building Tool</h3>
 
-        <p>The <code>PlanExplainer</code> is not just a convenience feature &mdash; it is a trust-building tool. Research in human-robot interaction consistently shows that explanation improves user trust and task performance. When operators understand <em>why</em> the system made a decision, they can:</p>
+        <p>The <code>PlanExplainer</code> isn't just a convenience feature — it's a trust-building tool. When operators understand <em>why</em> the system made a decision, they can:</p>
 
         <ol>
           <li><strong>Detect errors</strong> in the system's reasoning</li>
           <li><strong>Build accurate mental models</strong> of the system's capabilities and limitations</li>
-          <li><strong>Calibrate their trust</strong> appropriately (neither over-trusting nor under-trusting)</li>
+          <li><strong>Calibrate their trust</strong> appropriately — neither over-trusting nor under-trusting</li>
         </ol>
 
         <p>CropCommand's explanations serve all three purposes. The step-by-step plan shows what the robot will do. The constraint results show what was checked. The warnings highlight what might go wrong.</p>
 
         <h3>The Feedback Loop as Trust Calibration</h3>
 
-        <p>Every feedback cycle is a trust calibration event. When a farmer modifies a plan and the modification succeeds (the revised plan validates and executes correctly), trust in the system increases. When the farmer has to reject a plan because the system missed something important, trust decreases &mdash; but it decreases in a controlled way, because the farmer caught the issue before execution.</p>
+        <p>Every feedback cycle is a trust calibration event. When a farmer modifies a plan and the modification succeeds, trust in the system increases. When the farmer has to reject a plan because the system missed something important, trust decreases — but it decreases in a controlled way, because the farmer caught the issue before execution.</p>
 
         <p>Over time, the pattern of feedback reveals where the system excels and where it struggles:</p>
 
@@ -348,7 +348,7 @@ else:
 
         <h2>Putting It All Together: The Complete Feedback Cycle</h2>
 
-        <p>Let us trace a complete feedback cycle for our running example.</p>
+        <p>Let's trace a complete feedback cycle for our running example.</p>
 
         <h3>Step 1: Plan Generation</h3>
 
@@ -385,7 +385,7 @@ Constraints violated:
 
         <h3>Step 3: Farmer Feedback</h3>
 
-        <p>The farmer sees the spatial violation and realizes they meant to avoid a section within Field North that is informally called the "organic corner," not the separate Organic Field. They provide feedback:</p>
+        <p>The farmer sees the spatial violation and realizes they meant to avoid a section within Field North informally called the "organic corner" — not the separate Organic Field. They provide feedback:</p>
 
 <pre><code>UserFeedback(
     plan_id="plan-a3f8b2c91e04",
@@ -404,7 +404,7 @@ Spatial constraints: {'avoid_zones': ['organic', 'organic corner']}.
 
         <h3>Step 5: Approval</h3>
 
-        <p>The farmer reviews the revised plan, confirms it looks correct, and submits:</p>
+        <p>The farmer reviews the revised plan, confirms it looks right, and submits:</p>
 
 <pre><code>UserFeedback(
     plan_id="plan-a3f8b2c91e04",
@@ -417,33 +417,29 @@ Spatial constraints: {'avoid_zones': ['organic', 'organic corner']}.
 
         <h2>Design Principles</h2>
 
-        <p>Several design principles emerge from CropCommand's feedback architecture:</p>
+        <p>A few design principles emerge clearly from CropCommand's feedback architecture:</p>
 
-        <p><strong>1. Immutability through deep copying.</strong> Every feedback handler creates a deep copy of the plan before modifying it. The original plan is never mutated. This means the system can maintain a history of plan versions, enabling audit trails and rollback.</p>
+        <p><strong>1. Immutability through deep copying.</strong> Every feedback handler creates a deep copy of the plan before modifying it. The original is never mutated. This means the system can maintain a history of plan versions, enabling audit trails and rollback.</p>
 
         <p><strong>2. Re-validation after every change.</strong> No modification is trusted without re-running the constraint engine. This prevents feedback from inadvertently violating constraints that were previously satisfied.</p>
 
         <p><strong>3. Structured and unstructured feedback coexist.</strong> The <code>parameters</code> dict carries machine-readable data; the <code>details</code> string carries human-readable context. Both are preserved and used.</p>
 
-        <p><strong>4. Graceful degradation.</strong> When the handler cannot resolve a requested robot or zone, it does not crash. It adds a warning and returns the plan in a state that requires further human review.</p>
+        <p><strong>4. Graceful degradation.</strong> When the handler can't resolve a requested robot or zone, it doesn't crash. It adds a warning and returns the plan in a state that requires further human review.</p>
 
         <p><strong>5. Audit trails.</strong> Every modification appends to the plan's <code>explanation</code> string and <code>warnings</code> list. The history of changes is visible in the plan itself, not buried in log files.</p>
 
         <h2>Key Takeaways</h2>
 
         <ul>
-          <li><strong>Human-in-the-loop is not a fallback for poor AI; it is a design requirement for safe autonomous systems.</strong> CropCommand treats every plan as a proposal subject to human review, not an autonomous decision.</li>
+          <li><strong>Human-in-the-loop is not a fallback for poor AI — it's a design requirement for safe autonomous systems.</strong> CropCommand treats every plan as a proposal subject to human review, not an autonomous decision.</li>
           <li><strong>Six feedback types cover the space of common plan modifications.</strong> Accept, reject, modify robot, modify timing, modify route, and add constraint handle the vast majority of real-world operator interventions.</li>
           <li><strong>Re-validation after feedback is essential.</strong> Modifications can introduce new constraint violations. The feedback loop catches these before execution.</li>
           <li><strong>Natural language explanation builds trust.</strong> When farmers can read and understand every step, constraint, and warning in a plan, they can make informed approval decisions and build accurate mental models of the system.</li>
           <li><strong>Confidence scoring enables graduated trust.</strong> High-confidence plans with no violations need minimal review. Low-confidence plans with violations demand careful inspection. The system communicates the appropriate level of scrutiny.</li>
         </ul>
 
-        <h2>PhD Alignment</h2>
-
-        <p>This feedback architecture directly embodies the PhD position's emphasis on <em>"human-in-the-loop feedback loops for user supervision and trust calibration."</em> CropCommand demonstrates that effective human-robot interaction in agriculture requires more than just generating correct plans &mdash; it requires explaining those plans, capturing nuanced human feedback, applying modifications safely, and calibrating the level of autonomy to the operator's trust and the system's confidence.</p>
-
-        <p>The three-part CropCommand pipeline &mdash; natural language understanding, constraint reasoning, and human-in-the-loop feedback &mdash; represents a complete system for translating farmer intent into safe, validated robot operations. It is the kind of end-to-end thinking that I aim to bring to PhD research in agricultural robotics.</p>
+        <p>That wraps up the CropCommand series. We went from a raw natural language command, through intent parsing and task decomposition, through physical constraint checking against a simulated farm environment, and finally through a human feedback loop that keeps the farmer in control at every step. Building this end-to-end was genuinely fun — and if you're working on something similar, I hope this series gave you some useful ideas to take into your own system.</p>
 
       </div>
       <div class="post-nav">

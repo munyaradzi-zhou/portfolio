@@ -30,17 +30,17 @@
       </div>
       <div class="post-content">
 
-        <h2>Introduction: The Translation Challenge</h2>
+        <h2>The Translation Challenge</h2>
 
-        <p>Imagine you're a farmer standing in your field, looking at your phone. You want to know: "Which fields have low soil moisture right now?"</p>
+        <p>Picture a farmer standing in their field, phone in hand, wanting to know: "Which fields have low soil moisture right now?"</p>
 
-        <p>You could open a database tool, write a SQL query, figure out table names, understand the schema, and get your answer. But that's not practical when you're in the field, covered in dirt, with limited time.</p>
+        <p>They could open a database tool, learn the table schema, write a SQL query, and figure out how to run it. Or they could just type the question. FarmSmart makes the second option work — and building that translation layer is where most of the interesting engineering lives.</p>
 
-        <p>This is where natural language translation comes in. We need to take your question in plain English and convert it into a precise database query that returns exactly what you need. This is one of the most complex parts of FarmSmart, and in this part, we'll explore how we built it.</p>
+        <p>The system's job is simple to describe and surprisingly tricky to build: take what a farmer types in plain English, figure out what they actually want, and turn it into a real database query. Let's walk through exactly how that works.</p>
 
-        <h2>The Problem: Understanding Human Language</h2>
+        <h2>The Problem: Human Language is Messy</h2>
 
-        <p>Human language is messy. The same question can be asked in dozens of ways:</p>
+        <p>The same question can show up in dozens of ways:</p>
 
         <ul>
           <li>"What's the soil moisture in Field A?"</li>
@@ -50,47 +50,41 @@
           <li>"Tell me about the moisture levels in Field A"</li>
         </ul>
 
-        <p>All of these mean the same thing, but a computer sees them as completely different strings of text. We need to extract the meaning, not just match exact words.</p>
+        <p>All of these mean the same thing. A computer, though, sees them as completely different strings of text. We need to extract meaning, not just match exact words. That's the core challenge.</p>
 
         <h2>The Solution: A Multi-Stage Pipeline</h2>
 
-        <p>We break down the translation problem into smaller, manageable pieces. Think of it like translating between languages - you don't translate word-by-word. Instead, you:</p>
+        <p>I break the translation problem into four smaller, manageable stages. Each stage has one job:</p>
 
         <ol>
-          <li>Understand the intent (what does the user want?)</li>
-          <li>Extract key information (what specific details matter?)</li>
-          <li>Build a structured query (how do we get the answer?)</li>
-          <li>Validate the query (is this safe and correct?)</li>
+          <li>Understand the intent — what does the user want?</li>
+          <li>Extract the key details — what specific information matters?</li>
+          <li>Build a structured query — how do we actually get the answer?</li>
+          <li>Validate the query — is this safe and sensible?</li>
         </ol>
 
-        <p>Let's explore each stage in detail.</p>
+        <p>Let's go through each one.</p>
 
-        <h2>Stage 1: Intent Classification - What Does the User Want?</h2>
+        <h2>Stage 1: Intent Classification — What Does the User Want?</h2>
 
-        <p>Intent classification is like determining the category of a question. Is the user asking for:</p>
-        <ul>
-          <li>Current status? ("What's the temperature?")</li>
-          <li>A trend? ("How has temperature changed?")</li>
-          <li>A comparison? ("Compare fields A and B")</li>
-          <li>An alert? ("Notify me if temperature exceeds 35&deg;C")</li>
-        </ul>
+        <p>Intent classification is just a fancy way of saying: figure out what someone is actually asking. "Is it hot in Field A?" and "Show me temperature readings for Field A" mean the same thing — the system needs to recognise that.</p>
+
+        <p>Is the user asking for current status? A historical trend? A comparison between fields? An alert condition? These are different questions that need different database queries, so we need to get this right first.</p>
 
         <h3>Why Machine Learning?</h3>
 
-        <p>We could use simple keyword matching:</p>
+        <p>You might think simple keyword matching would work:</p>
 
 <pre><code class="language-python">if "trend" in question:
     intent = "trend"
 elif "compare" in question:
     intent = "compare"</code></pre>
 
-        <p>But this breaks easily. What if someone asks "What's the trend in Field A?" - that works. But "Show me how temperature has changed" means the same thing but doesn't contain the word "trend".</p>
-
-        <p>Machine learning learns patterns, not just keywords. It can understand that "how has X changed" and "show me the trend of X" mean the same thing.</p>
+        <p>And it would — until someone asks "Show me how temperature has changed." Same meaning as "show me the trend", but no keyword match. Human language defeats keyword matching surprisingly quickly. Machine learning learns patterns instead of keywords, so it handles this naturally.</p>
 
         <h3>Training the Intent Classifier</h3>
 
-        <p>We train our classifier using a dataset of example questions paired with their correct intents. Think of it like teaching a child:</p>
+        <p>We train the classifier on example questions paired with their correct intents — like teaching by example:</p>
 
 <pre><code>Question: "What's the soil moisture in Field A?"
 Intent: query_status
@@ -101,66 +95,56 @@ Intent: trend
 Question: "Compare soil moisture across fields"
 Intent: compare</code></pre>
 
-        <p>After seeing many examples, the model learns patterns. It learns that questions starting with "What's" or "Show me" often want current status, while questions with "trend" or "changed" want historical data.</p>
+        <p>After seeing enough examples, the model learns that questions starting with "What's" or "Show me current" often want status, while questions with "trend", "changed", or "over the last week" want historical data. It's pattern recognition, not memorisation.</p>
 
         <h3>How It Works: TF-IDF and Logistic Regression</h3>
 
-        <p>We use a combination of TF-IDF (Term Frequency-Inverse Document Frequency) and Logistic Regression. Let's break this down:</p>
+        <p>I use TF-IDF combined with Logistic Regression. Here's what that actually means:</p>
 
-        <p><strong>TF-IDF</strong> converts text into numbers that represent word importance:</p>
-        <ul>
-          <li>Common words like "the" and "is" get low scores (they appear everywhere)</li>
-          <li>Important words like "soil_moisture" and "Field A" get high scores (they're specific to this question)</li>
-        </ul>
+        <p><strong>TF-IDF</strong> converts text into numbers that capture word importance. Common words like "the" and "is" get low scores — they appear everywhere and tell you nothing. Important words like "soil_moisture" or "trend" get high scores because they're specific and meaningful.</p>
 
-        <p><strong>Logistic Regression</strong> is a simple but effective machine learning algorithm that learns to classify based on these numerical features.</p>
+        <p><strong>Logistic Regression</strong> is a simple but effective algorithm that learns to classify based on those numerical features. It's not glamorous, but it's fast, interpretable, and works really well for this kind of structured classification task.</p>
 
-        <p>The model outputs both an intent and a confidence score. A confidence of 0.95 means the model is 95% sure about its classification. Low confidence (below 0.7) might indicate an ambiguous question that needs clarification.</p>
+        <p>The model outputs both an intent and a confidence score. 0.95 means it's 95% sure. Below 0.7 and we flag the question as ambiguous and ask the user to clarify.</p>
 
         <h3>Intent Types We Support</h3>
 
-        <p>We classify questions into several intent types:</p>
-
-        <p><strong>query_status</strong> - Get current value</p>
+        <p><strong>query_status</strong> — Get current value</p>
         <ul>
           <li>"What's the temperature in Field A?"</li>
           <li>"Show me the soil moisture"</li>
         </ul>
 
-        <p><strong>trend</strong> - Get historical trend</p>
+        <p><strong>trend</strong> — Get historical trend</p>
         <ul>
           <li>"How has temperature changed?"</li>
           <li>"Show me the soil moisture trend over the last week"</li>
         </ul>
 
-        <p><strong>compare</strong> - Compare multiple fields or metrics</p>
+        <p><strong>compare</strong> — Compare multiple fields or metrics</p>
         <ul>
           <li>"Compare soil moisture in Field A and Field B"</li>
           <li>"Which field has higher temperature?"</li>
         </ul>
 
-        <p><strong>alert</strong> - Set up alerts or check alert conditions</p>
+        <p><strong>alert</strong> — Check alert conditions</p>
         <ul>
-          <li>"Alert me if temperature exceeds 35&deg;C"</li>
+          <li>"Alert me if temperature exceeds 35°C"</li>
           <li>"Which fields have low soil moisture?"</li>
         </ul>
 
-        <h2>Stage 2: Slot Extraction - Finding the Important Details</h2>
+        <h2>Stage 2: Slot Extraction — Finding the Important Details</h2>
 
-        <p>Once we know the intent, we need to extract specific information from the question. These are called "slots" - the key pieces of information needed to answer the question.</p>
+        <p>Once we know the intent, we need the specifics. These are called "slots" — the key pieces of information needed to actually construct the query.</p>
 
-        <p>Think of it like filling out a form:</p>
-        <ul>
-          <li>Intent tells us which form to use</li>
-          <li>Slots are the fields we need to fill in</li>
-        </ul>
+        <p>Think of it like filling out a form. The intent tells you which form to use. The slots are the individual fields you need to fill in.</p>
 
         <h3>What Are Slots?</h3>
 
-        <p>For the question "What's the soil moisture in Field A?", the slots are:</p>
+        <p>For "What's the soil moisture in Field A?", the slots are:</p>
         <ul>
-          <li><strong>metric</strong>: "soil_moisture" (what are we measuring?)</li>
-          <li><strong>field</strong>: "Field A" (where are we measuring?)</li>
+          <li><strong>metric</strong>: "soil_moisture"</li>
+          <li><strong>field</strong>: "Field A"</li>
         </ul>
 
         <p>For "Show me the temperature trend for Field B over the last 24 hours":</p>
@@ -172,11 +156,9 @@ Intent: compare</code></pre>
 
         <h3>Slot Extraction Methods</h3>
 
-        <p>We use a combination of regex patterns and heuristics. Why not machine learning here? Because slots are more structured - we're looking for specific patterns like field names, metric types, and time expressions.</p>
+        <p>Here I use regex patterns and heuristics rather than machine learning. Why? Because slots are more structured than intents. We're looking for specific patterns — field names, metric types, time expressions. Regex is fast, predictable, and easy to debug for this kind of work.</p>
 
         <p><strong>Metric Extraction</strong></p>
-
-        <p>We look for common metric names:</p>
 
 <pre><code class="language-python">patterns = {
     "soil_moisture": r"(soil\s+)?moisture|moisture\s+level",
@@ -186,14 +168,10 @@ Intent: compare</code></pre>
 
         <p><strong>Field Extraction</strong></p>
 
-        <p>We look for field identifiers:</p>
-
 <pre><code class="language-python"># Matches: "Field A", "field A", "Field-A", etc.
 pattern = r"field\s+([A-Z]|\d+)"</code></pre>
 
         <p><strong>Time Window Extraction</strong></p>
-
-        <p>We look for time expressions:</p>
 
 <pre><code class="language-python">patterns = {
     "1h": r"last\s+hour|past\s+hour|1\s+hour",
@@ -203,31 +181,21 @@ pattern = r"field\s+([A-Z]|\d+)"</code></pre>
 
         <h3>Handling Ambiguity</h3>
 
-        <p>Sometimes questions are ambiguous. Consider: "What's the temperature?"</p>
-
-        <p>This question is missing the field. We have two options:</p>
+        <p>Sometimes questions are incomplete. "What's the temperature?" is missing the field. We have two strategies depending on context:</p>
         <ol>
-          <li>Ask the user to clarify</li>
-          <li>Use context (if they asked about Field A earlier, assume Field A)</li>
+          <li>If the user recently asked about Field A, assume Field A and continue</li>
+          <li>If there's no useful context, ask for clarification</li>
         </ol>
 
-        <p>We implement both strategies. If a required slot is missing and we have recent context, we use it. Otherwise, we ask for clarification.</p>
+        <p>The key insight is that follow-up questions in a conversation are almost always about the same thing the user just asked about. Using context for these cases feels natural and saves a lot of back-and-forth.</p>
 
-        <h2>Stage 3: Query Building - From Slots to Database Query</h2>
+        <h2>Stage 3: Query Building — From Slots to Database Query</h2>
 
-        <p>Now we have:</p>
-        <ul>
-          <li>Intent: "query_status"</li>
-          <li>Slots: metric="soil_moisture", field="Field A"</li>
-        </ul>
-
-        <p>We need to build a database query. This is where we convert our structured understanding into actual database commands.</p>
+        <p>Now we have an intent and a set of slots. We need to turn those into an actual database query.</p>
 
         <h3>Query Templates</h3>
 
-        <p>We use templates for each intent type. Think of templates as fill-in-the-blank queries:</p>
-
-        <p><strong>Template for query_status:</strong></p>
+        <p>I use templates — fill-in-the-blank queries for each intent type. For <code>query_status</code>:</p>
 
 <pre><code class="language-sql">SELECT value, timestamp
 FROM sensor_data
@@ -236,7 +204,7 @@ WHERE field_id = {field}
 ORDER BY timestamp DESC
 LIMIT 1</code></pre>
 
-        <p>When we fill in the slots:</p>
+        <p>Fill in the slots and you get:</p>
 
 <pre><code class="language-sql">SELECT value, timestamp
 FROM sensor_data
@@ -247,15 +215,15 @@ LIMIT 1</code></pre>
 
         <h3>Handling Different Intents</h3>
 
-        <p>Each intent needs a different query structure:</p>
+        <p>Each intent needs a structurally different query:</p>
 
-        <p><strong>query_status</strong> - Simple lookup</p>
+        <p><strong>query_status</strong> — Simple lookup</p>
 
 <pre><code class="language-sql">SELECT value FROM sensor_data
 WHERE field_id = ? AND metric = ?
 ORDER BY timestamp DESC LIMIT 1</code></pre>
 
-        <p><strong>trend</strong> - Time series with aggregation</p>
+        <p><strong>trend</strong> — Time series with aggregation</p>
 
 <pre><code class="language-sql">SELECT AVG(value) as avg_value,
        time_bucket('1 hour', timestamp) as hour
@@ -265,14 +233,14 @@ WHERE field_id = ? AND metric = ?
 GROUP BY hour
 ORDER BY hour</code></pre>
 
-        <p><strong>compare</strong> - Multiple fields</p>
+        <p><strong>compare</strong> — Multiple fields</p>
 
 <pre><code class="language-sql">SELECT field_id, AVG(value) as avg_value
 FROM sensor_data
 WHERE field_id IN (?, ?) AND metric = ?
 GROUP BY field_id</code></pre>
 
-        <p><strong>alert</strong> - Threshold checking</p>
+        <p><strong>alert</strong> — Threshold checking</p>
 
 <pre><code class="language-sql">SELECT field_id, value, timestamp
 FROM sensor_data
@@ -282,14 +250,12 @@ WHERE metric = ?
 
         <h3>Time Window Conversion</h3>
 
-        <p>One challenge is converting natural language time expressions into database time ranges:</p>
+        <p>One tricky piece is converting natural language time expressions into database-friendly intervals:</p>
 
 <pre><code>"last hour" → timestamp > now() - INTERVAL '1 hour'
 "last 24 hours" → timestamp > now() - INTERVAL '24 hours'
 "last week" → timestamp > now() - INTERVAL '7 days'
 "today" → timestamp >= CURRENT_DATE</code></pre>
-
-        <p>We have a function that handles these conversions:</p>
 
 <pre><code class="language-python">def time_window_to_interval(time_window: str) -> str:
     """Convert '24h' to 'INTERVAL 24 hours'"""
@@ -301,9 +267,9 @@ WHERE metric = ?
 
         <h3>Parameterized Queries</h3>
 
-        <p>We always use parameterized queries (the <code>?</code> placeholders) instead of string concatenation. This prevents SQL injection attacks.</p>
+        <p>I always use parameterized queries instead of string concatenation. This is non-negotiable from a security standpoint.</p>
 
-        <p><strong>Bad (vulnerable to injection):</strong></p>
+        <p><strong>Bad (vulnerable to SQL injection):</strong></p>
 
 <pre><code class="language-python">query = f"SELECT * FROM sensor_data WHERE field_id = '{field}'"
 # If field = "Field A'; DROP TABLE sensor_data; --"
@@ -315,46 +281,39 @@ WHERE metric = ?
 params = [field]
 # Database handles escaping automatically</code></pre>
 
-        <h2>Stage 4: Query Validation - Safety First</h2>
+        <p>The database driver handles the escaping. You can't accidentally create a SQL injection vulnerability when the user input never gets concatenated into the query string.</p>
 
-        <p>Before executing any query, we validate it. This ensures:</p>
-        <ul>
-          <li>The query is safe (no injection attacks)</li>
-          <li>The query is correct (valid fields, metrics, time ranges)</li>
-          <li>The query won't overload the system (reasonable time windows)</li>
-        </ul>
+        <h2>Stage 4: Query Validation — Safety First</h2>
+
+        <p>Before any query executes, it gets validated. Three concerns: safety, correctness, and performance.</p>
 
         <h3>Safety Checks</h3>
 
-        <p><strong>SQL Injection Prevention</strong></p>
-        <ul>
-          <li>We only use parameterized queries</li>
-          <li>We validate that field names and metrics match our allowed list</li>
-          <li>We reject any query with suspicious patterns</li>
-        </ul>
+        <p>We only use parameterized queries (covered above). We also validate that field names and metrics are on our allowed list — if someone tries to inject a field name that doesn't exist, we catch it here, not at query time.</p>
 
-        <p><strong>Correctness Checks</strong></p>
+        <h3>Correctness Checks</h3>
 
-        <p>We validate that:</p>
+        <p>We verify that:</p>
         <ul>
-          <li>The field exists in our database</li>
-          <li>The metric is supported</li>
+          <li>The referenced field actually exists in our database</li>
+          <li>The requested metric is one we support</li>
           <li>The time window is reasonable (not "last 100 years")</li>
-          <li>Required parameters are present</li>
+          <li>All required parameters are present</li>
         </ul>
 
-        <p><strong>Performance Checks</strong></p>
+        <h3>Performance Checks</h3>
 
-        <p>We enforce limits:</p>
+        <p>We enforce some limits to prevent runaway queries:</p>
         <ul>
-          <li>Maximum time window: 90 days (prevents queries that scan too much data)</li>
-          <li>Maximum number of fields in comparison: 10 (prevents overly complex queries)</li>
-          <li>Required indexes exist for the query pattern</li>
+          <li>Maximum time window: 90 days (prevents full-table scans)</li>
+          <li>Maximum fields in a comparison: 10 (keeps queries manageable)</li>
         </ul>
+
+        <p>These limits aren't about being restrictive — they're about keeping the system fast for everyone.</p>
 
         <h2>Putting It All Together: A Complete Example</h2>
 
-        <p>Let's trace a complete example from question to answer:</p>
+        <p>Let's trace "What's the soil moisture in Field A?" through every stage.</p>
 
         <p><strong>Step 1: User asks a question</strong></p>
 
@@ -403,56 +362,35 @@ query = builder.build_query(query_structure)
 
         <h2>Handling Complex Questions</h2>
 
-        <p>Not all questions are simple. Let's look at some complex examples:</p>
+        <p>Not every question is a clean, single-slot query. Here are some trickier cases and how we handle them.</p>
 
         <h3>Example 1: Implicit Information</h3>
 
         <p><strong>Question:</strong> "How has it changed?"</p>
 
-        <p>This question is missing the metric and field. We need context from previous questions. If the user previously asked about "soil moisture in Field A", we use that context.</p>
+        <p>Missing metric, missing field. But if the user just asked about soil moisture in Field A, we use that context and interpret this as "How has soil moisture in Field A changed?" This is the most natural way for a human to continue a conversation, so we support it.</p>
 
         <h3>Example 2: Multiple Metrics</h3>
 
         <p><strong>Question:</strong> "Compare temperature and humidity in Field A"</p>
 
-        <p>This requires two separate queries, one for temperature and one for humidity, then combining the results.</p>
+        <p>This requires two separate queries — one for temperature, one for humidity — then combining the results before responding. Not complex, just a bit more work in the query builder.</p>
 
         <h3>Example 3: Relative Time</h3>
 
         <p><strong>Question:</strong> "Show me data from yesterday"</p>
 
-        <p>We need to convert "yesterday" to a specific date range based on the current date.</p>
+        <p>We convert "yesterday" to an actual date range based on the current date at query time. Simple but easy to get wrong if you're not careful about timezones.</p>
 
         <h3>Example 4: Aggregations</h3>
 
         <p><strong>Question:</strong> "What's the average soil moisture this week?"</p>
 
-        <p>This requires:</p>
-        <ul>
-          <li>Time window: last 7 days</li>
-          <li>Aggregation: average</li>
-          <li>Metric: soil_moisture</li>
-        </ul>
+        <p>This needs a time window of 7 days, an average aggregation, and the metric soil_moisture. The slot extractor pulls all three, and the query builder generates a GROUP BY query. Here's the fun part — once the pipeline is built correctly, complex questions like this just work.</p>
 
         <h2>Confidence Scoring</h2>
 
-        <p>Not all translations are equally confident. We calculate confidence scores at multiple stages:</p>
-
-        <p><strong>Intent Confidence</strong> - How sure are we about the intent?</p>
-        <ul>
-          <li>High (0.9+): Clear intent, confident classification</li>
-          <li>Medium (0.7-0.9): Reasonable confidence, but some ambiguity</li>
-          <li>Low (&lt;0.7): Unclear intent, might need clarification</li>
-        </ul>
-
-        <p><strong>Slot Extraction Confidence</strong> - How sure are we about extracted slots?</p>
-        <ul>
-          <li>All required slots found with clear patterns: High confidence</li>
-          <li>Some slots inferred from context: Medium confidence</li>
-          <li>Missing required slots: Low confidence</li>
-        </ul>
-
-        <p><strong>Overall Confidence</strong> - Combined score</p>
+        <p>Not all translations are equally reliable. I track confidence at multiple stages and combine them into an overall score:</p>
 
 <pre><code class="language-python">overall_confidence = (
     intent_confidence * 0.4 +  # Intent is most important
@@ -460,52 +398,34 @@ query = builder.build_query(query_structure)
     validation_score * 0.2      # Validation adds certainty
 )</code></pre>
 
-        <p>We use confidence scores to:</p>
-        <ul>
-          <li>Decide whether to ask for clarification</li>
-          <li>Warn users about potentially incorrect answers</li>
-          <li>Log low-confidence translations for improvement</li>
-        </ul>
+        <p>I use these scores to decide whether to ask for clarification (low confidence), add a warning to the response (medium confidence), or proceed with full confidence. Knowing how sure you are is almost as valuable as the answer itself.</p>
 
         <h2>Training and Improving the Model</h2>
 
-        <p>Our intent classifier improves over time. Here's how:</p>
+        <p>The intent classifier improves over time as we gather more data.</p>
 
         <h3>Training Data</h3>
 
-        <p>We use a dataset of 200 example questions with their correct intents and slots. This dataset includes:</p>
-        <ul>
-          <li>Various phrasings of the same question</li>
-          <li>Different question types</li>
-          <li>Edge cases and ambiguous questions</li>
-        </ul>
+        <p>I use a dataset of 200 example questions with their correct intents and slots. It's deliberately varied — different phrasings of the same question, edge cases, ambiguous examples. The more diverse the training data, the more robust the model.</p>
 
         <h3>Evaluation</h3>
 
-        <p>We measure accuracy:</p>
+        <p>I measure three things:</p>
         <ul>
-          <li><strong>Intent Accuracy</strong>: What percentage of intents are classified correctly?</li>
-          <li><strong>Slot Extraction Accuracy</strong>: What percentage of slots are extracted correctly?</li>
-          <li><strong>End-to-End Accuracy</strong>: What percentage of questions result in correct answers?</li>
+          <li><strong>Intent Accuracy</strong> — What fraction of intents are classified correctly?</li>
+          <li><strong>Slot Extraction Accuracy</strong> — What fraction of slots are extracted correctly?</li>
+          <li><strong>End-to-End Accuracy</strong> — What fraction of questions result in the correct final answer?</li>
         </ul>
 
         <h3>Continuous Improvement</h3>
 
-        <p>When the system makes mistakes:</p>
-        <ol>
-          <li>We log the question and the incorrect translation</li>
-          <li>We add it to our training dataset with the correct answer</li>
-          <li>We retrain the model periodically</li>
-          <li>We evaluate improvements</li>
-        </ol>
+        <p>When the system gets something wrong, I log the question and the incorrect translation, add it to the training set with the correct label, and retrain periodically. This kind of feedback loop is what makes the system better over time rather than stagnating.</p>
 
         <h2>Error Handling</h2>
 
-        <p>What happens when translation fails?</p>
+        <p>When translation fails, we fail gracefully.</p>
 
         <h3>Missing Information</h3>
-
-        <p>If required slots are missing:</p>
 
 <pre><code class="language-python">if not field:
     return {
@@ -516,9 +436,7 @@ query = builder.build_query(query_structure)
 
         <h3>Ambiguous Questions</h3>
 
-        <p>If intent is unclear:</p>
-
-<pre><code class="language-python">if intent_confidence &lt; 0.7:
+<pre><code class="language-python">if intent_confidence < 0.7:
     return {
         "error": "ambiguous_intent",
         "message": "Could you rephrase your question?",
@@ -527,75 +445,59 @@ query = builder.build_query(query_structure)
 
         <h3>Invalid Combinations</h3>
 
-        <p>If the query doesn't make sense:</p>
-
 <pre><code class="language-python">if metric == "soil_moisture" and time_window == "1 minute":
     return {
         "error": "invalid_combination",
         "message": "Soil moisture doesn't change that quickly. Try a longer time window."
     }</code></pre>
 
+        <p>That last one I find particularly satisfying — the system is domain-aware enough to recognise that soil moisture doesn't meaningfully change in 60 seconds and tells the user to ask a more sensible question.</p>
+
         <h2>Performance Considerations</h2>
 
-        <p>Translation needs to be fast - users expect answers in under 2 seconds. Here's how we optimize:</p>
+        <p>Users expect answers in under 2 seconds. The translation pipeline needs to be fast to leave budget for query execution and response generation.</p>
 
-        <p><strong>Caching</strong> - We cache intent classification results for common questions</p>
+        <p><strong>Caching</strong> — Common questions and their classifications are cached. "What's the temperature?" doesn't need a fresh model inference every single time.</p>
 
-        <p><strong>Pre-compiled Patterns</strong> - Regex patterns are compiled once, not on every extraction</p>
+        <p><strong>Pre-compiled Patterns</strong> — Regex patterns are compiled once at startup, not on every extraction request.</p>
 
-        <p><strong>Model Optimization</strong> - The intent classifier is lightweight and fast</p>
+        <p><strong>Model Optimization</strong> — The intent classifier is deliberately lightweight. TF-IDF + Logistic Regression is orders of magnitude faster than a neural network, with comparable accuracy for this kind of structured domain.</p>
 
-        <p><strong>Parallel Processing</strong> - Intent classification and slot extraction can happen in parallel</p>
+        <p><strong>Parallel Processing</strong> — Intent classification and slot extraction are independent, so they can run simultaneously.</p>
 
         <h2>Testing the Translator</h2>
 
-        <p>We test the translator extensively:</p>
+        <p>I test the translation pipeline at three levels:</p>
 
-        <p><strong>Unit Tests</strong> - Test each component in isolation</p>
-        <ul>
-          <li>Does intent classification work for known examples?</li>
-          <li>Does slot extraction find the right information?</li>
-          <li>Does query building create correct SQL?</li>
-        </ul>
+        <p><strong>Unit Tests</strong> — Does intent classification work for known examples? Does slot extraction find the right information? Does query building produce correct SQL?</p>
 
-        <p><strong>Integration Tests</strong> - Test the full pipeline</p>
-        <ul>
-          <li>Can we translate a question end-to-end?</li>
-          <li>Do we get correct results for the translated query?</li>
-        </ul>
+        <p><strong>Integration Tests</strong> — Can we translate a question end-to-end and get a valid result from the database?</p>
 
-        <p><strong>Accuracy Tests</strong> - Measure real-world performance</p>
-        <ul>
-          <li>Test on a held-out dataset</li>
-          <li>Measure accuracy metrics</li>
-          <li>Identify common failure modes</li>
-        </ul>
+        <p><strong>Accuracy Tests</strong> — I hold out a set of examples from training and test the model on those. This gives an honest measurement of real-world performance, not just performance on examples the model has already seen.</p>
 
         <h2>What's Next?</h2>
 
-        <p>In Part 4, we'll explore real-time stream processing - how we analyze data as it arrives, detect anomalies, and identify trends in live sensor streams. This is where we move from simple queries to intelligent analytics that can predict problems before they happen.</p>
-
-        <p>We'll cover:</p>
+        <p>In Part 4, we get into real-time stream processing — how we analyse data as it arrives, detect anomalies, and spot trends in live sensor streams. That's where we go from answering questions about what's happened to catching problems as they unfold. We'll cover:</p>
         <ul>
           <li>Spark Structured Streaming for real-time processing</li>
-          <li>Windowed aggregations (how do we calculate averages over time?)</li>
-          <li>Anomaly detection (how do we spot unusual patterns?)</li>
-          <li>Change-point detection (how do we identify when conditions change?)</li>
-          <li>Event correlation (how do we connect related events?)</li>
+          <li>Windowed aggregations (how do you calculate a rolling average over a stream?)</li>
+          <li>Anomaly detection (how do you spot unusual patterns?)</li>
+          <li>Change-point detection (how do you know when something has shifted?)</li>
+          <li>Event correlation (how do you connect related events?)</li>
         </ul>
 
         <h2>Key Takeaways</h2>
 
         <ol>
-          <li><strong>Translation is multi-stage</strong> - We break the problem into intent, slots, query building, and validation.</li>
-          <li><strong>Machine learning helps with intent</strong> - Patterns in language are learned, not hardcoded.</li>
-          <li><strong>Regex and heuristics work for slots</strong> - Structured information extraction doesn't always need ML.</li>
-          <li><strong>Safety is critical</strong> - Query validation prevents attacks and errors.</li>
-          <li><strong>Confidence matters</strong> - Knowing how sure we are helps us handle ambiguity gracefully.</li>
-          <li><strong>Context helps</strong> - Previous questions provide context for ambiguous follow-ups.</li>
+          <li><strong>Translation is multi-stage</strong> — Intent, then slots, then query building, then validation. Each stage has a clear job.</li>
+          <li><strong>Machine learning for intent, regex for slots</strong> — Use the right tool for each sub-problem. ML handles fuzzy pattern matching; regex handles structured extraction.</li>
+          <li><strong>Safety is non-negotiable</strong> — Parameterized queries, allowed-list validation, and query limits prevent both attacks and accidents.</li>
+          <li><strong>Confidence matters</strong> — Knowing how sure you are lets you handle ambiguity gracefully instead of silently returning bad answers.</li>
+          <li><strong>Context makes conversations work</strong> — Follow-up questions are only natural if the system remembers what came before.</li>
+          <li><strong>Fail gracefully</strong> — When something doesn't work, tell the user why and suggest how to fix it.</li>
         </ol>
 
-        <p>The translation system we've built can handle a wide variety of questions while maintaining safety and accuracy. It's not perfect - no NLP system is - but it's robust enough for real-world use and improves over time as we gather more training data.</p>
+        <p>The translation system handles a wide variety of questions while staying safe and accurate. It's not perfect — no NLP system is — but it's robust enough for real-world use and gets better over time as we feed it more training data.</p>
 
       </div>
       <div class="post-nav">
