@@ -36,9 +36,9 @@
 
         <h2>Recap</h2>
 
-        <p>In Part 1, we established why graph-native retrieval is essential for agricultural knowledge: multi-hop questions about crops, diseases, treatments, and dosages require traversing explicit relationships, not just finding semantically similar text chunks. We designed a knowledge graph schema with seven node types and seven relationship types, and built an ingestion pipeline that transforms agricultural documents into structured graph data in Neo4j.</p>
+        <p>In Part 1, we established why graph-native retrieval is the right tool for agricultural knowledge: multi-hop questions about crops, diseases, treatments, and dosages require traversing explicit relationships, not just finding semantically similar text chunks. We designed a knowledge graph schema with seven node types and seven relationship types, and built an ingestion pipeline that transforms agricultural documents into structured graph data in Neo4j.</p>
 
-        <p>Now we turn to the core of AgriSage: the retrieval pipeline. When a user asks a natural language question, how does the system decide what to retrieve, generate the right Cypher queries, and assemble a coherent answer from potentially multiple graph traversals?</p>
+        <p>Now we get to the fun part &mdash; the retrieval pipeline. When a user asks a natural language question, how does the system decide what to retrieve, generate the right Cypher queries, and assemble a coherent answer from potentially multiple graph traversals?</p>
 
         <hr>
 
@@ -53,17 +53,17 @@
           <li><strong>Execution and Fallback</strong>: Run queries against Neo4j; fall back to ChromaDB vector search if the graph returns empty.</li>
         </ol>
 
-        <p>Let us walk through each stage in detail.</p>
+        <p>Let's walk through each stage in detail.</p>
 
         <hr>
 
         <h2>Stage 1: Complexity Detection</h2>
 
-        <p>Not every question needs multi-hop reasoning. "What pests affect tomatoes?" is a single traversal: <code>(Crop)-[:SUSCEPTIBLE_TO]-&gt;(Pest)</code>. Decomposing it into sub-questions would add latency without improving accuracy. The <code>QueryDecomposer</code> first classifies the question to determine the right strategy.</p>
+        <p>Not every question needs multi-hop reasoning. "What pests affect tomatoes?" is a single traversal: <code>(Crop)-[:SUSCEPTIBLE_TO]-&gt;(Pest)</code>. Decomposing it into sub-questions would just add latency without improving accuracy. So the <code>QueryDecomposer</code> first figures out which path to take.</p>
 
         <p>Classification uses two signals:</p>
 
-        <p><strong>Explicit complexity markers</strong> -- phrases like "and also," "compare," "furthermore," or "considering" that indicate compound questions:</p>
+        <p><strong>Explicit complexity markers</strong> &mdash; phrases like "and also," "compare," "furthermore," or "considering" that indicate a compound question:</p>
 
 <pre><code class="language-python">COMPLEXITY_KEYWORDS = [
     "and also", "furthermore", "in addition", "as well as",
@@ -72,7 +72,7 @@
     "schedule and dosage", "considering",
 ]</code></pre>
 
-        <p><strong>Entity type counting</strong> -- if the question references three or more distinct entity types (crop, threat, treatment, growth stage), it almost certainly requires multi-hop traversal:</p>
+        <p><strong>Entity type counting</strong> &mdash; if the question references three or more distinct entity types (crop, threat, treatment, growth stage), it almost certainly requires multi-hop traversal:</p>
 
 <pre><code class="language-python">def _detect_complexity(self, question: str) -&gt; bool:
     q = question.lower()
@@ -97,15 +97,17 @@
 
     return entity_types_found &gt;= 3</code></pre>
 
-        <p>This threshold of three entity types maps directly to what we observed in the thesis: questions requiring two or more graph hops almost always reference three or more entity categories. The threshold keeps false positives low -- a question about "wheat diseases" touches only two categories and routes correctly to the simple path.</p>
+        <p>The threshold of three entity types keeps false positives low. A question about "wheat diseases" touches only two categories and routes correctly to the simple path. Something like "dosage for treating late blight on tomatoes during flowering" hits all four and gets decomposed. It's a simple heuristic but it works really well in practice.</p>
 
         <hr>
 
         <h2>Stage 2: ReAct Query Decomposition</h2>
 
-        <p>For complex questions, AgriSage uses the <strong>ReAct (Reasoning + Acting) pattern</strong> to decompose the original question into a sequence of simpler sub-questions. Each sub-question targets a single graph traversal pattern, and later sub-questions can depend on the results of earlier ones.</p>
+        <p>For complex questions, AgriSage uses the <strong>ReAct (Reasoning + Acting) pattern</strong> to break the original question into a sequence of simpler sub-questions. Each sub-question targets a single graph traversal pattern, and later sub-questions can depend on the results of earlier ones.</p>
 
-        <p>The decomposition produces a <code>DecompositionPlan</code> -- a structured object that tracks the original question, the ordered sub-questions, their dependencies, and their execution status:</p>
+        <p>Think of it like asking "who's the cousin of my aunt's neighbour?" &mdash; you can't answer that from a single fact. You have to follow the chain: who's my aunt, who's her neighbour, who's their cousin. ReAct does the same thing for agricultural queries.</p>
+
+        <p>The decomposition produces a <code>DecompositionPlan</code> &mdash; a structured object that tracks the original question, the ordered sub-questions, their dependencies, and their execution status:</p>
 
 <pre><code class="language-python">@dataclass
 class SubQuestion:
@@ -158,11 +160,11 @@ Return JSON:
     ]
 }</code></pre>
 
-        <p>Sub-questions 0 and 1 have no dependencies and can be thought of as parallel. Sub-question 2 depends on sub-question 0 because it needs to know which treatments to look up dosages for.</p>
+        <p>Sub-questions 0 and 1 have no dependencies and can run in parallel. Sub-question 2 waits for sub-question 0 because it needs to know which treatments to look up dosages for. Clean dependency management, no wasted work.</p>
 
         <h3>Rule-Based Fallback</h3>
 
-        <p>When no LLM is available, the decomposer uses a rule-based strategy that pattern-matches against common multi-hop structures in agricultural queries. It detects crop names, threat names, and query intent (treatment, growth stage, dosage), then generates an appropriate sequence of sub-questions:</p>
+        <p>When no LLM is available, the decomposer falls back to a rule-based strategy that pattern-matches against common multi-hop structures in agricultural queries. It detects crop names, threat names, and query intent (treatment, growth stage, dosage), then generates an appropriate sequence of sub-questions:</p>
 
 <pre><code class="language-python">def _rule_based_decompose(self, question: str) -&gt; DecompositionPlan:
     q = question.lower()
@@ -193,13 +195,13 @@ Return JSON:
         ))
     return DecompositionPlan(...)</code></pre>
 
-        <p>This rule-based path covers the most common multi-hop patterns in agricultural queries and provides a reliable fallback when LLM decomposition is unavailable or fails.</p>
+        <p>This rule-based path covers the most common multi-hop patterns in agricultural queries. It's not as flexible as LLM decomposition, but it's fast, deterministic, and works without any API calls.</p>
 
         <hr>
 
         <h2>Stage 3: Schema-Aware Cypher Generation</h2>
 
-        <p>Each sub-question (or the original question, for simple queries) must be translated into a Cypher query that respects the knowledge graph schema. The <code>CypherGenerator</code> uses <strong>few-shot prompting</strong> with domain-specific examples to produce accurate queries.</p>
+        <p>Each sub-question (or the original question, for simple queries) has to be translated into a Cypher query that actually matches the knowledge graph schema. The <code>CypherGenerator</code> uses <strong>few-shot prompting</strong> with domain-specific examples to produce accurate queries. Think of it like giving a librarian a very specific treasure map before asking them to find a book.</p>
 
         <h3>Domain-Specific Few-Shot Examples</h3>
 
@@ -255,7 +257,7 @@ Return a JSON object with:
 - "explanation": one-sentence explanation of the query logic
 """</code></pre>
 
-        <p>Including the full schema in every prompt is a deliberate choice inherited from the thesis architecture. It prevents schema hallucination -- the LLM cannot invent relationship types like <code>CAUSES</code> or <code>PREVENTS</code> that do not exist in the graph. The few-shot examples further ground the model in the correct Cypher patterns.</p>
+        <p>Including the full schema in every prompt is a deliberate choice, and here's why it matters: if you don't, the LLM will start inventing relationship types like <code>CAUSES</code> or <code>PREVENTS</code> that don't exist in your graph. Then your queries return nothing and you spend an hour debugging what is actually a prompt design problem. Pinning the schema in context prevents that whole class of failure. The few-shot examples further ground the model in the correct Cypher patterns for your specific domain.</p>
 
         <h3>Rule-Based Cypher Generation</h3>
 
@@ -282,7 +284,7 @@ def _rule_based_generation(question: str) -&gt; dict[str, Any]:
         }
     # ... additional patterns for threats, growth stages, organic treatments</code></pre>
 
-        <p>The system also provides a library of reusable Cypher templates for the most common traversal patterns, such as the full multi-hop treatment chain:</p>
+        <p>The system also provides a library of reusable Cypher templates for the most common traversal patterns, like the full multi-hop treatment chain:</p>
 
 <pre><code class="language-python">"multi_hop_treatment_chain": {
     "description": "Full chain: crop -&gt; threat -&gt; treatment -&gt; parameters",
@@ -303,7 +305,7 @@ def _rule_based_generation(question: str) -&gt; dict[str, Any]:
 
         <h3>Graph Execution with Dependency Ordering</h3>
 
-        <p>The <code>GraphRetriever</code> executes the decomposition plan by running sub-questions in dependency order. It maintains a set of completed sub-question IDs and only executes a sub-question when all its dependencies have been resolved:</p>
+        <p>The <code>GraphRetriever</code> executes the decomposition plan by running sub-questions in dependency order. It keeps track of which sub-questions have completed and only starts a new one when all its dependencies are done:</p>
 
 <pre><code class="language-python">def _execute_complex(self, plan: DecompositionPlan, domain: str | None) -&gt; dict[str, Any]:
     executed: set[int] = set()
@@ -329,7 +331,7 @@ def _rule_based_generation(question: str) -&gt; dict[str, Any]:
 
         <h3>Context Enrichment Between Sub-Questions</h3>
 
-        <p>A critical feature is <strong>context enrichment</strong>: when a sub-question depends on earlier results, the system injects the relevant entity names from those results into the question text. This allows the Cypher generator to produce more targeted queries:</p>
+        <p>This is actually one of the most important pieces of the whole system. When a sub-question depends on earlier results, the system injects the relevant entity names from those results directly into the question text. That way the Cypher generator gets concrete names to work with instead of vague references:</p>
 
 <pre><code class="language-python">@staticmethod
 def _enrich_with_context(sq: SubQuestion, plan: DecompositionPlan) -&gt; str:
@@ -348,11 +350,11 @@ def _enrich_with_context(sq: SubQuestion, plan: DecompositionPlan) -&gt; str:
         return f"{sq.question} (Context: {'; '.join(context_parts)})"
     return sq.question</code></pre>
 
-        <p>For example, if sub-question 0 ("What treatments exist for late blight on tomatoes?") returns <code>["Copper Fungicide", "Mancozeb"]</code>, then sub-question 2 ("What are the dosage parameters?") becomes "What are the dosage parameters? (Context: From previous step: Copper Fungicide, Mancozeb)". This enriched question gives the Cypher generator the concrete entity names it needs.</p>
+        <p>For example: if sub-question 0 ("What treatments exist for late blight on tomatoes?") returns <code>["Copper Fungicide", "Mancozeb"]</code>, then sub-question 2 ("What are the dosage parameters?") becomes "What are the dosage parameters? (Context: From previous step: Copper Fungicide, Mancozeb)". That enriched question gives the Cypher generator exactly what it needs to write a precise query.</p>
 
         <h3>Hybrid Retrieval: Vector Fallback</h3>
 
-        <p>The <code>HybridRetriever</code> wraps the graph retriever and adds a ChromaDB vector fallback. The strategy is graph-first: vector search only activates when the graph returns empty results.</p>
+        <p>The <code>HybridRetriever</code> wraps the graph retriever and adds ChromaDB vector search as a fallback. The strategy is graph-first: vector search only kicks in when the graph returns empty results.</p>
 
 <pre><code class="language-python">class HybridRetriever:
     def retrieve(self, question: str, domain: str | None = None, ...) -&gt; dict[str, Any]:
@@ -374,19 +376,19 @@ def _enrich_with_context(sq: SubQuestion, plan: DecompositionPlan) -&gt; str:
 
         return result</code></pre>
 
-        <p>This is not a naive "merge everything" strategy. The graph is always preferred because it provides structured, relationship-aware results. Vector search only fills the gap for questions that do not map cleanly to graph patterns -- for instance, free-text questions about best practices that are not captured as explicit entities in the graph.</p>
+        <p>This isn't a naive "merge everything" strategy. The graph is always preferred because it provides structured, relationship-aware results. Vector search only fills the gap for questions that don't map cleanly to graph patterns &mdash; free-text questions about best practices, for instance, that aren't captured as explicit entities in the graph. Best of both worlds.</p>
 
         <hr>
 
         <h2>Putting It All Together: A Worked Example</h2>
 
-        <p>Let us trace the full pipeline for a concrete question:</p>
+        <p>Let's trace the full pipeline for a concrete question:</p>
 
         <p><strong>User asks:</strong> "What treatments and dosages are recommended for late blight on tomatoes during flowering?"</p>
 
-        <p><strong>Step 1 -- Complexity Detection:</strong> The question references a crop (tomato), a disease (late blight), treatments, dosages, and a growth stage (flowering). That is four entity types -- well above the threshold of three. The question is classified as complex.</p>
+        <p><strong>Step 1 &mdash; Complexity Detection:</strong> The question references a crop (tomato), a disease (late blight), treatments, dosages, and a growth stage (flowering). That's four entity types &mdash; well above the threshold of three. Complex query, time to decompose.</p>
 
-        <p><strong>Step 2 -- Decomposition:</strong> The ReAct decomposer produces three sub-questions:</p>
+        <p><strong>Step 2 &mdash; Decomposition:</strong> The ReAct decomposer produces three sub-questions:</p>
 
         <table>
           <thead>
@@ -415,7 +417,7 @@ def _enrich_with_context(sq: SubQuestion, plan: DecompositionPlan) -&gt; str:
           </tbody>
         </table>
 
-        <p><strong>Step 3 -- Cypher Generation and Execution:</strong></p>
+        <p><strong>Step 3 &mdash; Cypher Generation and Execution:</strong></p>
 
         <p>Sub-question 0 generates:</p>
 
@@ -441,13 +443,13 @@ RETURN t.name AS treatment, p.name AS parameter, p.value AS value, p.unit AS uni
 
         <p>Returns: dosage, interval, and pre-harvest interval parameters for both treatments.</p>
 
-        <p><strong>Step 4 -- Response Generation:</strong> All results are aggregated and passed to the response generator, which synthesizes a natural language answer with specific dosages, application intervals, and source citations.</p>
+        <p><strong>Step 4 &mdash; Response Generation:</strong> All results are aggregated and passed to the response generator, which synthesizes a natural language answer with specific dosages, application intervals, and source citations.</p>
 
         <hr>
 
         <h2>What's Next</h2>
 
-        <p>In <a href="part3-conversational.html">Part 3</a>, we cover how AgriSage transforms raw retrieval results into coherent natural language responses, how the conversational interface manages multi-turn sessions, and how we evaluate the system using a benchmark of 10 agricultural questions split between single-hop and multi-hop categories. We also reflect on lessons learned and the connection to PhD research directions.</p>
+        <p>In <a href="part3-conversational.html">Part 3</a>, we cover how AgriSage transforms raw retrieval results into coherent natural language responses, how the conversational interface manages multi-turn sessions, and how we evaluate the system using a benchmark of 10 agricultural questions split between single-hop and multi-hop categories. We also dig into the lessons learned from building the whole thing.</p>
 
       </div>
       <div class="post-nav">
