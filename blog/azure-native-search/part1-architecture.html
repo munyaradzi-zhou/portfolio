@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why I Rebuilt My RAG System on Azure (Part 1) &mdash; Azure Native Search Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Why I Rebuilt My RAG System on Azure (And Deleted 3,500 Lines of Code)</h1>
+        <p class="meta">Azure Native Search Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series on building an Azure-native document search system with Azure AI Search, Document Intelligence, OpenAI, Cosmos DB, and Blob Storage. <a href="part2-ingestion-pipeline.html">Part 2</a> covers the ingestion pipeline. <a href="part3-chat-and-deployment.html">Part 3</a> covers chat history, streaming, and deployment.</em></p>
+
+        <hr>
+
+        <h2>The Open-Source RAG Problem</h2>
+
+        <p>My first project was a standard open-source RAG system: Qdrant for vector search, PyMuPDF for PDF parsing, LlamaIndex for chunking, a CrossEncoder for reranking, and LangChain to glue it together. It worked. It also came with a 4GB Docker image, 14 pip dependencies, a self-hosted vector database container, and ~120 lines just for the retrieval pipeline.</p>
+
+        <p>The architecture looked like this:</p>
+
+<pre><code>Project 1 (Open-Source):
+
+  Upload &rarr; PyMuPDF parse &rarr; LlamaIndex chunk &rarr; OpenAI embed &rarr; Qdrant upsert
+
+  Question &rarr; Qdrant vector search &rarr; BM25 rerank (client-side) &rarr;
+             CrossEncoder rerank (22M params, CPU) &rarr; GPT answer</code></pre>
+
+        <p>Three separate retrieval steps. A CrossEncoder model running on CPU adding 1.7 seconds of latency. Manual score fusion with hand-tuned weights (0.7 vector / 0.3 BM25). A self-hosted Qdrant container that needed persistent volumes and health checks.</p>
+
+        <p>I wanted to know: what happens when you replace every open-source component with its Azure-native equivalent?</p>
+
+        <h2>The Azure-Native Architecture</h2>
+
+        <p>Six Azure services replace the entire open-source stack:</p>
+
+<pre><code>INGESTION PIPELINE               QUERY PIPELINE
+
+1. Azure Blob Storage             1. Azure AI Search
+   Store original doc                Hybrid: BM25 + Vector + RRF
+                                     + Semantic reranking
+2. Document Intelligence             (single API call)
+   Parse PDF/DOCX/IMG
+                                  2. Azure OpenAI GPT-4o-mini
+3. Custom Chunker                    Generate cited answer
+   Sentence-based
+                                  3. Azure Cosmos DB
+4. Azure OpenAI Embed                Save conversation history
+   text-embedding-3-small
+
+5. Azure AI Search
+   Index chunks</code></pre>
+
+        <p>The query pipeline went from three retrieval steps and ~120 lines of code to one API call and ~50 lines. The Docker image dropped from ~4GB to ~500MB. The pip dependency count dropped from 14+ (including PyTorch) to 11.</p>
+
+        <h2>What Changed (and What Stayed)</h2>
+
+        <table>
+          <thead>
+            <tr><th>Component</th><th>Project 1 (Open-Source)</th><th>Project 2 (Azure-Native)</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Vector DB</strong></td><td>Qdrant (self-hosted, Docker)</td><td>Azure AI Search (managed)</td></tr>
+            <tr><td><strong>PDF Parsing</strong></td><td>PyMuPDF (local CPU)</td><td>Azure Document Intelligence</td></tr>
+            <tr><td><strong>Chunking</strong></td><td>LlamaIndex SentenceWindow</td><td>Custom sentence chunker (99 lines)</td></tr>
+            <tr><td><strong>Reranking</strong></td><td>CrossEncoder 22M params (CPU)</td><td>AI Search semantic ranker (server-side)</td></tr>
+            <tr><td><strong>Document Storage</strong></td><td>Local filesystem</td><td>Azure Blob Storage</td></tr>
+            <tr><td><strong>Chat History</strong></td><td>In-memory (lost on restart)</td><td>Azure Cosmos DB (persistent)</td></tr>
+            <tr><td><strong>LLM Framework</strong></td><td>LangChain</td><td>Direct AsyncAzureOpenAI SDK</td></tr>
+            <tr><td><strong>Embeddings</strong></td><td>text-embedding-3-large (3072d)</td><td>text-embedding-3-small (1536d)</td></tr>
+            <tr><td><strong>Docker Size</strong></td><td>~4GB (includes PyTorch)</td><td>~500MB</td></tr>
+            <tr><td><strong>Retrieval Code</strong></td><td>~120 lines (3 steps)</td><td>~50 lines (1 API call)</td></tr>
+          </tbody>
+        </table>
+
+        <p>The key insight isn't that Azure is "better" &mdash; it's that managed services eliminate entire categories of operational work. No Qdrant health monitoring. No CrossEncoder model downloads. No LlamaIndex version pinning. No PyTorch CUDA compatibility issues.</p>
+
+        <h2>The Single API Call That Replaces Three Steps</h2>
+
+        <p>This is the most significant architectural difference. In Project 1, retrieval was:</p>
+
+<pre><code class="language-python"># Project 1: Three separate steps
+
+# Step 1: Dense vector search (Qdrant)
+vector_results = qdrant.search(query_vector, limit=20)
+
+# Step 2: BM25 keyword scoring (rank-bm25 library)
+bm25_scores = bm25.get_scores(tokenized_query)
+
+# Step 3: CrossEncoder reranking (22M param model on CPU)
+reranked = cross_encoder.predict([(query, doc) for doc in candidates])
+# Manual score fusion: 0.7 * vector + 0.3 * bm25</code></pre>
+
+        <p>In Project 2, the same retrieval is one call:</p>
+
+<pre><code class="language-python"># Project 2: One API call does everything
+
+results = client.search(
+    search_text=question,                                 # BM25 (server-side)
+    vector_queries=[VectorizedQuery(                      # Vector search
+        vector=query_embedding,
+        k_nearest_neighbors=20,
+        fields="embedding",
+    )],
+    query_type="semantic",                                # Neural reranking
+    semantic_configuration_name="default-semantic-config",
+    top=5,
+)</code></pre>
+
+        <p>Azure AI Search handles BM25 scoring, HNSW vector search, Reciprocal Rank Fusion (Microsoft-tuned), and deep neural semantic reranking &mdash; all server-side. The client code just sends the query and gets back ranked results with <code>@search.reranker_score</code>.</p>
+
+        <table>
+          <thead>
+            <tr><th>Aspect</th><th>Project 1</th><th>Project 2</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>BM25</strong></td><td>Client-side, on retrieved set only</td><td>Server-side, full corpus-level</td></tr>
+            <tr><td><strong>Score fusion</strong></td><td>Manual min-max normalize + 0.7/0.3 weights</td><td>Reciprocal Rank Fusion (Microsoft-tuned)</td></tr>
+            <tr><td><strong>Reranking</strong></td><td>CrossEncoder 22M params on CPU (~1.7s)</td><td>Microsoft neural model (server-side, ~0ms client)</td></tr>
+            <tr><td><strong>Client code</strong></td><td>~120 lines across 3 files</td><td>~50 lines in 1 file</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Why GPT-4o-mini Over a Reasoning Model</h2>
+
+        <p>Project 1 used gpt-5-mini, a reasoning model. For simple RAG Q&amp;A, this was overkill:</p>
+
+        <table>
+          <thead>
+            <tr><th>Property</th><th>GPT-4o-mini</th><th>gpt-5-mini</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Type</strong></td><td>Standard chat</td><td>Reasoning model</td></tr>
+            <tr><td><strong>Temperature</strong></td><td>Configurable</td><td>Not supported (fixed)</td></tr>
+            <tr><td><strong>Hidden reasoning</strong></td><td>None</td><td>~64 tokens of thinking</td></tr>
+            <tr><td><strong>Cost per 1M tokens</strong></td><td>$0.15 / $0.60</td><td>~$3 / $12</td></tr>
+            <tr><td><strong>Latency</strong></td><td>~2&ndash;4s per answer</td><td>~8&ndash;9s (includes reasoning)</td></tr>
+          </tbody>
+        </table>
+
+        <p>GPT-4o-mini is 20x cheaper and 3x faster for factual retrieval tasks. The reasoning model's hidden thinking adds latency without benefit &mdash; for "how many days can employees work remotely?", there's nothing to reason about. The answer is in the context or it isn't.</p>
+
+        <h2>Why No LangChain</h2>
+
+        <p>Project 1 used LangChain for prompt construction, chain composition, and LLM calls. Project 2 uses the <code>AsyncAzureOpenAI</code> SDK directly. The generator is 97 lines total &mdash; system prompt, context formatting, and the API call.</p>
+
+        <p>This wasn't an anti-LangChain decision. For a single-model Q&amp;A system with one prompt template, LangChain adds dependency weight without proportional value. The direct SDK gives you streaming (<code>stream=True</code>), chat history management (just append to messages), and full control over temperature and token limits.</p>
+
+        <p>For the multi-agent system (Project 1's sister project with LangGraph), LangChain absolutely earned its place. But for a straightforward RAG pipeline, the direct SDK is simpler.</p>
+
+        <h2>Cost: $12&ndash;20/Month</h2>
+
+        <table>
+          <thead>
+            <tr><th>Service</th><th>Tier</th><th>Monthly Cost</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Azure AI Search</td><td>Free</td><td>$0</td></tr>
+            <tr><td>Azure OpenAI</td><td>Pay-per-token</td><td>$3&ndash;5 (200K tokens)</td></tr>
+            <tr><td>Azure Document Intelligence</td><td>Free F0</td><td>$0 (500 pages/mo)</td></tr>
+            <tr><td>Azure Blob Storage</td><td>Standard LRS</td><td>$0.02 (100MB)</td></tr>
+            <tr><td>Azure Cosmos DB</td><td>Serverless</td><td>$1&ndash;3</td></tr>
+            <tr><td><strong>Total</strong></td><td></td><td><strong>$12&ndash;20</strong></td></tr>
+          </tbody>
+        </table>
+
+        <p>The Azure free tiers are generous. AI Search Free gives you one index with 50MB. Document Intelligence F0 gives 500 pages/month. Cosmos DB Serverless charges per RU (request unit) &mdash; a point read is ~1 RU, a session with 20 messages costs ~40 RUs total.</p>
+
+        <h2>Live Results: 5/5 Questions Correct</h2>
+
+        <p>I tested with a sample employee handbook (Acme Corp, 5 chapters, 3,465 bytes). The document was ingested: 1 page parsed, 2 chunks created, 2 vectors indexed. Then five questions:</p>
+
+        <table>
+          <thead>
+            <tr><th>Question</th><th>Answer</th><th>Correct?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>How many days/week can employees work remotely?</td><td>"Up to 3 days per week [Doc: company_policy.txt, Page: 1]"</td><td>Yes</td></tr>
+            <tr><td>What is the PTO accrual rate for year 3&ndash;5 employees?</td><td>"20 days per year (1.67 days per month) [Doc: ...]"</td><td>Yes</td></tr>
+            <tr><td>What is the expense approval threshold for $3000?</td><td>"Department head approval [Doc: ...]"</td><td>Yes</td></tr>
+            <tr><td>How often are performance reviews conducted?</td><td>"Twice per year: mid-year (June) and annual (December) [Doc: ...]"</td><td>Yes</td></tr>
+            <tr><td>What are the data security tiers?</td><td>"Three tiers: Public, Internal, Confidential [Doc: ...]"</td><td>Yes</td></tr>
+          </tbody>
+        </table>
+
+        <p>Every answer included source citations. Every answer was factually correct against the document. The semantic ranker consistently ranked the relevant chunk 2x+ higher than irrelevant ones (scores like 3.30 vs 1.33).</p>
+
+        <h2>What's Next</h2>
+
+        <p>In <a href="part2-ingestion-pipeline.html">Part 2</a>, I'll walk through the complete ingestion pipeline: uploading to Blob Storage, parsing with Document Intelligence (including OCR for images), the custom sentence chunker, embedding with Azure OpenAI, and index creation in AI Search with HNSW vector configuration and semantic ranking setup.</p>
+
+        <p>In <a href="part3-chat-and-deployment.html">Part 3</a>, I'll cover the query pipeline with chat history, Cosmos DB's partition key design for session management, streaming responses via SSE, the Streamlit frontend, and Docker deployment.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-ingestion-pipeline.html">Part 2: Ingestion Pipeline &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
