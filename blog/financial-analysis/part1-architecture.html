@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why I Built a Multi-Agent System for Financial Analysis (Part 1) &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Why I Built a Multi-Agent System for Financial Analysis (And Why Single Agents Fail)</h1>
+        <p class="meta">Multi-Agent Financial Analysis Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series on building a multi-agent financial market analysis system with LangGraph, Azure OpenAI, and Azure Cosmos DB. <a href="part2-building-agents.html">Part 2</a> covers building the agents. <a href="part3-deployment-results.html">Part 3</a> covers deployment and live results.</em></p>
+
+        <hr>
+
+        <h2>The Problem: One LLM Prompt Can't Do Everything</h2>
+
+        <p>I started where most people start: a single prompt.</p>
+
+        <p>"You are a financial analyst. Research Apple's stock and write an investment report."</p>
+
+        <p>The result? A confident-sounding report with hallucinated P/E ratios, no source citations, missing disclaimers, and a "Strong Buy" recommendation based on information the model made up. The LLM was trying to simultaneously be a researcher, a data analyst, a writer, and a quality reviewer &mdash; and failing at all four.</p>
+
+        <p>Financial analysis is uniquely unforgiving. A wrong revenue figure isn't just a bad answer &mdash; it's the kind of mistake that erodes trust in the entire output. And unlike a general research task where vague answers might pass, investment analysis demands:</p>
+
+        <ul>
+          <li><strong>Specific numbers</strong> with source attribution (P/E ratio of 33.46x from Yahoo Finance, not "around 30x")</li>
+          <li><strong>Mandatory disclaimers</strong> ("This does not constitute investment advice...")</li>
+          <li><strong>Balanced analysis</strong> (bull AND bear case, not just cheerleading)</li>
+          <li><strong>Risk disclosure</strong> (macroeconomic, competitive, regulatory)</li>
+        </ul>
+
+        <p>No single prompt can reliably deliver all of these. The cognitive tasks are fundamentally different &mdash; web searching requires breadth, data extraction requires precision, report writing requires creativity, and quality review requires critical thinking. Asking one LLM call to excel at all four is like asking one employee to be the researcher, accountant, copywriter, and compliance officer simultaneously.</p>
+
+        <h2>The Solution: Four Agents, One Pipeline</h2>
+
+        <p>The insight that unlocked the project was simple: <strong>separate the cognitive tasks into specialised agents, each with its own prompt, tools, and focus area.</strong></p>
+
+<pre><code>User Query
+    |
+    v
++-----------+    +-----------+    +-----------+    +-----------+
+| Researcher|&rarr;  |  Analyst  |&rarr;  |  Writer   |&rarr;  |  Critic   |
+|           |    |           |    |           |    |           |
+| "Find me  |    | "Extract  |    | "Write a  |    | "Is this  |
+|  the data"|    |  numbers" |    |  report"  |    |  good     |
++-----------+    +-----------+    +-----^-----+    |  enough?" |
+                                       |           +-----+-----+
+                                       |                 |
+                                       +-----------------+
+                                        Revision loop (max 3x)
+                                        if quality score &lt; 7/10</code></pre>
+
+        <p>Each agent does one thing well:</p>
+
+        <table>
+          <thead>
+            <tr><th>Agent</th><th>Speciality</th><th>Temperature</th><th>Why This Temperature</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Researcher</strong></td><td>Gathers market data, earnings reports, analyst opinions from the web</td><td>0.1</td><td>Mostly factual, slight variation in phrasing</td></tr>
+            <tr><td><strong>Analyst</strong></td><td>Extracts structured JSON &mdash; P/E ratios, revenue, growth rates, risk factors</td><td>0.0</td><td>Deterministic extraction, no creativity needed</td></tr>
+            <tr><td><strong>Writer</strong></td><td>Produces a professional investment analysis report with disclaimers</td><td>0.3</td><td>Creative writing with professional tone variation</td></tr>
+            <tr><td><strong>Critic</strong></td><td>Scores on accuracy, completeness, risk disclosure, clarity (0&ndash;10)</td><td>0.0</td><td>Consistent, repeatable evaluation</td></tr>
+          </tbody>
+        </table>
+
+        <p>The magic is in the <strong>revision loop</strong>. If the Critic scores the report below 7 on any dimension, it sends specific feedback back to the Writer. The Writer revises, the Critic re-evaluates, and this continues for up to 3 cycles.</p>
+
+        <p>In our live test, the Apple stock analysis went through exactly 3 revisions:</p>
+
+        <ul>
+          <li>Draft 1: 5,412 chars &rarr; Critic: 8.25/10, REVISE</li>
+          <li>Draft 2: 5,931 chars &rarr; Critic: 8.25/10, REVISE</li>
+          <li>Draft 3: 7,547 chars &rarr; Critic: 8.50/10, <strong>APPROVED</strong></li>
+        </ul>
+
+        <p>The report grew by 39% through self-critique, adding a key metrics table, expanded competitive analysis, and more detailed macroeconomic risk scenarios.</p>
+
+        <h2>Why LangGraph (Not CrewAI, Not AutoGen, Not Raw LangChain)</h2>
+
+        <p><strong>LangChain (raw chains):</strong> Linear only. A &rarr; B &rarr; C &rarr; D. No way to loop the Critic back to the Writer. Dead end.</p>
+
+        <p><strong>CrewAI:</strong> High-level abstraction that's great for quick prototypes but hides too much. I needed fine-grained control over the state passed between agents, the conditional routing logic, and the streaming behavior.</p>
+
+        <p><strong>AutoGen:</strong> Designed for conversational multi-agent chat, not pipeline orchestration. The agents "talk to each other" which is elegant for brainstorming but adds unpredictable latency and token cost for a structured pipeline.</p>
+
+        <p><strong>LangGraph:</strong> Stateful directed graph with conditional edges. Exactly what I needed.</p>
+
+<pre><code class="language-python"># The entire pipeline definition &mdash; supervisor.py
+graph = StateGraph(AgentState)
+
+graph.add_node("researcher", researcher_node)
+graph.add_node("analyst", analyst_node)
+graph.add_node("writer", writer_node)
+graph.add_node("critic", critic_node)
+
+graph.set_entry_point("researcher")
+graph.add_edge("researcher", "analyst")
+graph.add_edge("analyst", "writer")
+graph.add_edge("writer", "critic")
+
+# This is the key &mdash; conditional routing
+graph.add_conditional_edges(
+    "critic",
+    should_revise,  # Returns "writer" or "end"
+    {"writer": "writer", "end": END},
+)</code></pre>
+
+        <p>LangGraph gave me three things that mattered:</p>
+
+        <ol>
+          <li><strong>Conditional edges</strong> &mdash; The Critic-to-Writer revision loop, cleanly expressed</li>
+          <li><strong>Shared state</strong> &mdash; All agents read and write a common <code>AgentState</code> TypedDict (no message passing, no serialization overhead)</li>
+          <li><strong>Streaming</strong> &mdash; <code>graph.astream()</code> yields each agent's output as it completes, perfect for WebSocket streaming to the frontend</li>
+        </ol>
+
+        <h2>The Shared State: AgentState</h2>
+
+<pre><code class="language-python">class AgentState(TypedDict):
+    task: str              # "Analyze Apple's stock performance..."
+    research: str          # 3,493 chars of structured research notes
+    analysis: dict         # JSON with key_metrics, market_trends, risk_factors
+    draft: str             # 5,412&ndash;7,547 chars of markdown report
+    critique: str          # JSON scoring with revision instructions
+    revision_count: int    # 0, 1, 2, or 3
+    final_output: str      # Set by Critic on APPROVED</code></pre>
+
+        <p>Each agent reads the fields it needs and writes exactly one or two fields back. No agent knows about the others. No agent calls another agent. They just read state, do their work, and write state. LangGraph handles the routing.</p>
+
+        <h2>Going Azure-Native: Why I Ditched OpenAI Direct and Qdrant</h2>
+
+        <h3>OpenAI GPT-4o &rarr; Azure OpenAI GPT-4o-mini</h3>
+
+        <table>
+          <thead>
+            <tr><th>Factor</th><th>OpenAI Direct</th><th>Azure OpenAI</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Cost (input tokens)</strong></td><td>$2.50/1M</td><td><strong>$0.15/1M</strong> (16x cheaper)</td></tr>
+            <tr><td><strong>Cost (output tokens)</strong></td><td>$10.00/1M</td><td><strong>$0.60/1M</strong> (16x cheaper)</td></tr>
+            <tr><td><strong>Enterprise controls</strong></td><td>None</td><td>SLA, RBAC, VNet, private endpoints</td></tr>
+          </tbody>
+        </table>
+
+        <p>GPT-4o-mini is not GPT-4o &mdash; it's smaller and faster, but for this use case, the quality difference is negligible. The Critic catches quality issues. The 16x cost reduction (from ~$1.00 per run to ~$0.07) makes the system practical for repeated use.</p>
+
+        <h3>Qdrant &rarr; Azure Cosmos DB</h3>
+
+        <p>Qdrant is a purpose-built vector database with HNSW indexing. But it requires a separate container &mdash; and for a financial analysis system with a small memory store (&lt; 100 documents), that's overkill.</p>
+
+        <p>Azure Cosmos DB (Serverless tier) gave me zero ops, pay-per-use (~286 RUs per memory store), and one Azure subscription for everything. The trade-off: no native vector search at this tier, so I compute cosine similarity client-side.</p>
+
+<pre><code class="language-python"># Embed the query
+query_vector = await self._embed(query)  # text-embedding-3-small
+
+# Fetch all documents from Cosmos DB
+items = list(container.query_items(
+    query="SELECT c.id, c.content, c.embedding FROM c WHERE c.embedding != null",
+    enable_cross_partition_query=True,
+))
+
+# Compute cosine similarity client-side
+scored = [(cosine_similarity(query_vector, item["embedding"]), item) for item in items]
+scored.sort(key=lambda x: x[0], reverse=True)
+return scored[:top_k]</code></pre>
+
+        <p>For 9 documents, this takes 1.36 seconds. Not as fast as Qdrant's native HNSW, but perfectly adequate. If the memory store grows to thousands of documents, I'd switch to Cosmos DB's vector indexing feature or a dedicated vector database.</p>
+
+        <h2>The Technology Stack</h2>
+
+        <table>
+          <thead>
+            <tr><th>Layer</th><th>Technology</th><th>Why</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>LLM</strong></td><td>Azure OpenAI GPT-4o-mini</td><td>16x cheaper than GPT-4o, adequate quality for structured tasks</td></tr>
+            <tr><td><strong>Agent Framework</strong></td><td>LangGraph</td><td>Conditional routing + shared state + streaming</td></tr>
+            <tr><td><strong>Web Search</strong></td><td>Tavily Search API</td><td>AI-optimized results with relevance scoring</td></tr>
+            <tr><td><strong>Memory</strong></td><td>Azure Cosmos DB (Serverless)</td><td>Zero ops, pay-per-use, same Azure subscription</td></tr>
+            <tr><td><strong>Embeddings</strong></td><td>text-embedding-3-small (1536d)</td><td>Cheap, fast, adequate for semantic recall</td></tr>
+            <tr><td><strong>Backend</strong></td><td>FastAPI + WebSocket</td><td>REST for simple use, WebSocket for real-time streaming</td></tr>
+            <tr><td><strong>Frontend</strong></td><td>Streamlit</td><td>Rapid UI with live agent progress</td></tr>
+            <tr><td><strong>Infrastructure</strong></td><td>Docker (1 container)</td><td>No vector DB sidecar needed</td></tr>
+          </tbody>
+        </table>
+
+        <p>In <a href="part2-building-agents.html">Part 2</a>, I'll dive deep into each agent's implementation: how the Researcher generates targeted financial sub-queries and runs parallel web searches, how the Analyst ensures structured JSON output with 6+ key metrics, and how the Critic's calibrated scoring rubric prevents both over-approving and over-rejecting.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-building-agents.html">Part 2: Building the Agents &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

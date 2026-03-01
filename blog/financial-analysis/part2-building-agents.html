@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building the Agents (Part 2) &mdash; Multi-Agent Financial Analysis Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building the Agents &mdash; From Web Search to Self-Critiquing Investment Reports</h1>
+        <p class="meta">Multi-Agent Financial Analysis Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series. In <a href="part1-architecture.html">Part 1</a>, I covered the architecture: why multi-agent beats single-agent, why LangGraph, and the Azure-native migration. Now let's build the agents. <a href="part3-deployment-results.html">Part 3</a> covers deployment and live results.</em></p>
+
+        <hr>
+
+        <h2>The Tools Layer: Three Capabilities Every Agent Can Use</h2>
+
+        <h3>Tool 1: Tavily Search &mdash; The Eyes of the System</h3>
+
+        <p>Tavily is an AI-optimized search API that returns results with relevance scores. Unlike raw Google search, Tavily's results are pre-filtered for quality and come with extracted content &mdash; no HTML parsing needed.</p>
+
+<pre><code class="language-python">async def tavily_search(query: str, max_results: int = 5) -> list[dict]:
+    client = AsyncTavilyClient(api_key=settings.tavily_api_key)
+    response = await client.search(
+        query=query,
+        max_results=max_results,
+        search_depth="advanced",     # Highest quality results
+        include_answer=False,        # We synthesize our own answers
+    )
+    return response.get("results", [])</code></pre>
+
+        <p>The <code>search_depth="advanced"</code> flag is critical. In standard mode, Tavily returns basic snippets. In advanced mode, it extracts full article content &mdash; the difference between "Apple reported Q4 earnings" and a 500-word excerpt with specific revenue figures, EPS, and segment breakdowns.</p>
+
+        <p><strong>Live result for "Apple AAPL Q4 2024 earnings revenue":</strong></p>
+
+<pre><code>Score: 0.99999  &rarr; Yahoo Finance: "Apple Reports 6% Revenue Growth in Q4 2024"
+Score: 0.99981  &rarr; AppleInsider: "Record-setting Q4 $102.5B result"
+Score: 0.99934  &rarr; Apple Newsroom: "iPhone drives record September quarter revenue"
+Score: 0.99931  &rarr; SEC Filing: "Fiscal 2024 fourth quarter ended September 28, 2024"
+Score: 0.99792  &rarr; Macrotrends: "Apple Revenue 2012-2025"</code></pre>
+
+        <h3>Tool 2: Python REPL &mdash; The Calculator</h3>
+
+        <p>Agents sometimes need to compute things: moving averages, percentage changes, valuation ratios. The Python REPL provides a sandboxed execution environment with restricted builtins:</p>
+
+<pre><code class="language-python">ALLOWED_BUILTINS = {
+    "abs", "all", "any", "bool", "dict", "float", "int", "len", "list",
+    "max", "min", "print", "range", "round", "set", "sorted", "str", "sum", "tuple", "zip",
+}
+SAFE_MODULES = {"math", "statistics", "json", "datetime", "collections", "itertools"}</code></pre>
+
+        <p>Any attempt to import <code>os</code>, <code>subprocess</code>, <code>sys</code>, or anything outside the safe list is immediately blocked. This is important for a system that executes LLM-generated code.</p>
+
+        <h3>Tool 3: Azure Cosmos DB Memory &mdash; The Brain</h3>
+
+        <p>Every time the Researcher finishes a task, it stores its findings in Cosmos DB with a 1536-dimensional embedding vector. The next time a related query comes in, the Researcher checks memory first before searching the web.</p>
+
+<pre><code class="language-python">class MemoryStore:
+    async def store(self, content: str, metadata: dict) -> str:
+        vector = await self._embed(content)          # text-embedding-3-small
+        document = {
+            "id": str(uuid.uuid4()),
+            "content": content,
+            "embedding": vector,                      # 1536 floats
+            "type": metadata.get("type", "research"),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            **metadata,
+        }
+        self._container.create_item(body=document)
+        return document["id"]
+
+    async def recall(self, query: str, top_k: int = 5) -> list[dict]:
+        query_vector = await self._embed(query)
+        items = list(self._container.query_items(
+            query="SELECT c.id, c.content, c.embedding, c.type, c.task "
+                  "FROM c WHERE c.embedding != null",
+            enable_cross_partition_query=True,
+        ))
+        # Client-side cosine similarity
+        scored = []
+        for item in items:
+            score = cosine_similarity(query_vector, item["embedding"])
+            scored.append((score, item))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [{"content": item["content"], "score": score}
+                for score, item in scored[:top_k]]</code></pre>
+
+        <p>In our live test, the memory store held 9 documents and recall took 1.36 seconds. The cost? 7.71 RUs for the query (~$0.00002).</p>
+
+        <hr>
+
+        <h2>Agent 1: The Researcher &mdash; Multi-Pass Financial Web Search</h2>
+
+        <p>The Researcher is the most complex agent. It doesn't just run one search &mdash; it generates targeted sub-queries, runs them in parallel, deduplicates results, and synthesizes everything with source attribution.</p>
+
+        <h3>Step 1: Check Memory</h3>
+
+<pre><code class="language-python">memory = MemoryStore()
+prior_research = await memory.recall(task, top_k=3)
+
+# In our Apple test, this returned 3 memories with score 0.648:
+# "Apple Inc. (NASDAQ:AAPL) reported Q3 2023 revenue of $81.8 billion..."</code></pre>
+
+        <h3>Step 2: Generate Sub-Queries</h3>
+
+        <p>A single search query like "Analyze Apple stock" is too broad. The Researcher uses GPT-4o-mini (temperature 0.0) to break it into 3 targeted queries covering fundamentals, market trends, and risk factors.</p>
+
+        <p><strong>Live output:</strong></p>
+
+<pre><code class="language-json">[
+  "Apple Inc. financials Q3 2023 earnings revenue metrics analysis",
+  "Apple stock market trends sector analysis competitive landscape 2023",
+  "Apple Inc. risk factors analyst opinions recent news October 2023"
+]</code></pre>
+
+        <h3>Step 3: Parallel Search</h3>
+
+<pre><code class="language-python">search_tasks = [tavily_search(q, max_results=8) for q in sub_queries]
+all_results = await asyncio.gather(*search_tasks)
+# 3 x 8 = 24 results &rarr; 22 unique after URL deduplication</code></pre>
+
+        <p>Three targeted queries from different angles produce 22 unique sources in the same time a single query would take. The parallel execution means the wall-clock time is just the slowest single search (~4 seconds for all three).</p>
+
+        <h3>Step 4: Deduplicate and Synthesize</h3>
+
+        <p>After deduplication by URL, all sources are passed to GPT-4o-mini for synthesis into comprehensive financial research notes with specific numbers and source URLs.</p>
+
+        <h3>Step 5: Store to Memory</h3>
+
+        <p>The first 2,000 characters of the research output get stored in Cosmos DB for future sessions.</p>
+
+        <p><strong>Total Researcher time: 23.43 seconds</strong> &mdash; memory recall (5.2s) + sub-query generation (2.3s) + parallel search (4.0s) + LLM synthesis (11.0s) + memory store (1.5s).</p>
+
+        <hr>
+
+        <h2>Agent 2: The Analyst &mdash; Structured Data Extraction</h2>
+
+        <p>The Analyst takes the Researcher's free-text notes and extracts a rigid JSON structure. Temperature: <strong>0.0</strong> &mdash; deterministic extraction.</p>
+
+        <h3>The Prompt: Be Specific About Structure</h3>
+
+        <p>The key to reliable JSON extraction is showing the exact schema you want:</p>
+
+<pre><code class="language-json">{
+    "key_metrics": [
+        {"metric": "P/E Ratio", "value": "28.5x", "source": "URL"},
+        {"metric": "Market Cap", "value": "$3.2T", "source": "URL"}
+    ],
+    "market_trends": [
+        {"trend": "...", "impact": "positive/negative/neutral", "evidence": "...", "source": "URL"}
+    ],
+    "risk_factors": [
+        {"risk": "...", "severity": "high/medium/low", "details": "...", "source": "URL"}
+    ],
+    "competitive_position": {
+        "market_share": "...",
+        "key_competitors": ["..."],
+        "competitive_advantages": ["..."],
+        "competitive_risks": ["..."]
+    },
+    "financial_health": {
+        "profitability": "strong/moderate/weak",
+        "growth_trajectory": "accelerating/stable/decelerating",
+        "balance_sheet": "strong/moderate/weak",
+        "cash_flow": "strong/moderate/weak"
+    }
+}</code></pre>
+
+        <p>The critical constraint: <strong>key_metrics must contain at least 5 entries.</strong></p>
+
+        <p><strong>Live output &mdash; 6 extracted metrics in 9.52 seconds:</strong></p>
+
+<pre><code>P/E Ratio:           33.46x       (Yahoo Finance)
+Market Cap:          $3.88T       (Yahoo Finance)
+Revenue (Q3 2023):   $81.8B       (Yahoo Finance)
+EPS (Q3 2023):       $1.26        (Yahoo Finance)
+Gross Margin:        44.5%        (Yahoo Finance)
+Revenue Growth YoY:  -1.4%        (Yahoo Finance)</code></pre>
+
+        <hr>
+
+        <h2>Agent 3: The Writer &mdash; Professional Report Generation</h2>
+
+        <p>The Writer transforms structured data into a professional investment analysis report. Temperature: <strong>0.3</strong> for natural writing without unpredictable financial claims.</p>
+
+        <h3>The Prompt: Enforce Structure, Not Words</h3>
+
+<pre><code>Instructions:
+- CRITICAL: Every section MUST contain at least 2 inline citations [Source: URL]
+- CRITICAL: Every section MUST include specific financial numbers and metrics
+- Include standard investment disclaimers
+- Present both bull and bear cases objectively
+- Never make unqualified buy/sell recommendations</code></pre>
+
+        <h3>Handling Revisions</h3>
+
+        <p>The Writer's most important capability is handling Critic feedback. On revision cycles, it receives the previous critique and must make targeted improvements:</p>
+
+<pre><code class="language-python">if critique and revision_count > 0:
+    prompt_parts.append(
+        f"## Revision Feedback from Critic (Revision #{revision_count})\n"
+        f"{critique}\n\n"
+        "Address ALL the revision instructions above. Make targeted improvements "
+        "while preserving the parts that were already good.\n\n"
+    )</code></pre>
+
+        <p>Without "preserve the parts that were already good," the Writer tends to rewrite everything from scratch, losing improvements from the previous draft.</p>
+
+        <p><strong>Revision progression:</strong></p>
+
+        <table>
+          <thead>
+            <tr><th>Revision</th><th>What Changed</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Draft 1 (5,412 chars)</td><td>Complete initial draft with all sections</td></tr>
+            <tr><td>Draft 2 (5,931 chars)</td><td>+519 chars: Expanded competitive landscape, more specific competitor impacts</td></tr>
+            <tr><td>Draft 3 (7,547 chars)</td><td>+1,616 chars: Key metrics table, detailed macro risk analysis, stronger sources</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>Agent 4: The Critic &mdash; Calibrated Quality Scoring</h2>
+
+        <p>The Critic is the most carefully engineered agent. A bad Critic breaks the system in two ways: too lenient (approves garbage) or too strict (infinite revision loops).</p>
+
+        <h3>Calibrated Scoring Rubrics</h3>
+
+<pre><code>1. Accuracy (0-10):
+   9-10: Every financial claim has a citation, all metrics properly sourced
+   7-8:  Most claims cited, minor data gaps
+   5-6:  Multiple unsourced financial claims
+
+2. Completeness (0-10):
+   9-10: Covers fundamentals, technicals, competitive landscape, risks, thesis
+   7-8:  Covers main aspects, some areas could be deeper
+   5-6:  Major financial aspects missing entirely
+
+3. Risk Disclosure (0-10):
+   9-10: Comprehensive risk section, proper disclaimers, balanced bull/bear
+   7-8:  Adequate risk coverage, disclaimer present
+   5-6:  Missing disclaimers or one-sided analysis
+
+4. Clarity (0-10):
+   9-10: Excellent structure, professional tone, actionable insights
+   7-8:  Good structure, minor readability issues
+   5-6:  Disorganized or unclear</code></pre>
+
+        <h3>The Calibration Anchor</h3>
+
+        <p>The most important line in the Critic's prompt:</p>
+
+<pre><code>Calibration guidance:
+- A report with proper disclaimer, financial metrics, and risk section deserves >= 7
+- Do NOT penalize for lacking tangential information not directly asked about
+- Focus revision instructions on the 1-2 most impactful improvements</code></pre>
+
+        <p>Without this anchor, GPT-4o-mini tends to give 6/10 scores to perfectly adequate reports and generate 5+ revision instructions per cycle. The calibration guidance ensures consistent scoring.</p>
+
+        <h3>Max Revisions Safety Valve</h3>
+
+<pre><code class="language-python">MAX_REVISIONS = 3
+
+if revision_count >= MAX_REVISIONS and critique.get("status") == "REVISE":
+    critique["status"] = "APPROVED"
+    critique["feedback"] += " [Auto-approved: max revision limit reached]"</code></pre>
+
+        <p>This prevents infinite loops. In practice, most reports reach 8+ scores by revision 2&ndash;3, so the safety valve rarely triggers.</p>
+
+        <hr>
+
+        <h2>Prompt Engineering: Lessons from Financial Analysis</h2>
+
+        <p><strong>Lesson 1: Show, Don't Tell.</strong> Bad prompt: "Extract financial metrics." Good prompt: Shows the exact JSON schema with example values.</p>
+
+        <p><strong>Lesson 2: Separate Concerns Ruthlessly.</strong> The Researcher gathers data. The Analyst extracts numbers. The Writer writes. No agent's prompt mentions another agent's job.</p>
+
+        <p><strong>Lesson 3: Calibrate the Critic Explicitly.</strong> Without calibration guidance, the Critic gives wildly inconsistent scores. Adding explicit score ranges and anchoring made scoring consistent across runs.</p>
+
+        <p><strong>Lesson 4: "Preserve What's Good" on Revisions.</strong> Without this instruction, the Writer rewrites from scratch on each revision, losing improvements from the previous draft.</p>
+
+        <p>In <a href="part3-deployment-results.html">Part 3</a>, I'll cover the delivery layer: FastAPI REST and WebSocket streaming, the Streamlit frontend, Docker deployment, live pipeline results with actual financial data, and lessons learned.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-architecture.html">&larr; Part 1: Architecture</a>
+        <a href="part3-deployment-results.html">Part 3: Deployment &amp; Results &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
