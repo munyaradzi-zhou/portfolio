@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building FarmMonitor: The Problem Nobody Talks About (Part 1) — FarmMonitor Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building FarmMonitor: The Problem Nobody Talks About</h1>
+        <p class="meta">FarmMonitor Series &middot; Part 1 of 4</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 4-part series on building FarmMonitor, an AI-powered platform that helps Zimbabwean farmers get the most out of their extension officer visits. No tech jargon required &mdash; if you've ever forgotten your doctor's instructions by the time you got home, you'll understand exactly what we're solving.</em></p>
+
+        <hr>
+
+        <h2>The Doctor's Office Problem</h2>
+
+        <p>Picture this: You visit your doctor. She spends 20 minutes explaining your condition, recommending lifestyle changes, prescribing medication, and telling you what to watch out for. You nod along, feeling confident.</p>
+
+        <p>By the time you reach the parking lot, you've already forgotten half of what she said.</p>
+
+        <p>Sound familiar? Studies show patients forget <strong>40&ndash;80% of medical information</strong> immediately after a visit. That's why apps like <a href="https://postvisit.ai/">postvisit.ai</a> exist &mdash; they help patients review, understand, and act on their doctor's advice after they leave the clinic.</p>
+
+        <p>Now imagine the same problem, but the stakes are a family's food supply for the entire year.</p>
+
+        <hr>
+
+        <h2>Meet Zimbabwe's Extension Officers</h2>
+
+        <p>In Zimbabwe (and across much of sub-Saharan Africa), agricultural <strong>extension officers</strong> are the "doctors" for farmers. They're government-employed experts who travel from farm to farm, advising smallholder farmers on everything from soil health to pest control to climate adaptation.</p>
+
+        <p>Think of them as agricultural consultants who make house calls &mdash; except each officer might be responsible for <strong>hundreds of farmers</strong> spread across vast rural areas. They visit each farm maybe once every few months, spend an hour or two observing crops, checking livestock, and dispensing advice.</p>
+
+        <p>And just like the doctor's office, the moment the officer drives away, the advice starts fading.</p>
+
+        <blockquote>
+          <p>"Plant your maize by the second week of November, apply Compound D fertilizer at 300kg per hectare, watch for fall armyworm &mdash; if you see window-paning on the leaves, apply Ampligo within 48 hours."</p>
+        </blockquote>
+
+        <p>That's a real recommendation. Now imagine hearing ten of those in one visit, and your next follow-up isn't for two months.</p>
+
+        <hr>
+
+        <h2>Why This Matters More Than You Think</h2>
+
+        <p>For a smallholder farmer in rural Zimbabwe, a missed recommendation isn't just an inconvenience &mdash; it can mean:</p>
+
+        <ul>
+          <li><strong>Planting too late</strong> and missing the rainy season entirely (no harvest)</li>
+          <li><strong>Using the wrong fertilizer ratio</strong> and burning your crops</li>
+          <li><strong>Ignoring early pest signs</strong> until half the field is destroyed</li>
+          <li><strong>Missing a vaccination window</strong> for livestock and losing cattle to disease</li>
+        </ul>
+
+        <p>These aren't hypothetical. They happen every growing season. And the extension officers? They're stretched thin. The average officer-to-farmer ratio in Zimbabwe can be as high as <strong>1:800</strong>. They physically cannot follow up with every farmer between visits.</p>
+
+        <hr>
+
+        <h2>The "Aha" Moment</h2>
+
+        <p>The idea for FarmMonitor came from a simple question: <strong>If postvisit.ai can help patients remember and act on medical advice, why can't we do the same for farmers?</strong></p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>What postvisit.ai does</th>
+              <th>What FarmMonitor does</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Records the doctor's visit notes</td>
+              <td>Records the officer's farm observations</td>
+            </tr>
+            <tr>
+              <td>Sends patients a summary they can review</td>
+              <td>Sends farmers a visit summary via app + Telegram</td>
+            </tr>
+            <tr>
+              <td>Lets patients ask questions about their treatment</td>
+              <td>Lets farmers ask questions about agricultural advice</td>
+            </tr>
+            <tr>
+              <td>Tracks if patients follow treatment plans</td>
+              <td>Tracks if farmers follow recommendations</td>
+            </tr>
+            <tr>
+              <td>Reminds patients about medications</td>
+              <td>Reminds farmers about seasonal tasks</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>The parallel is almost one-to-one. But farming in rural Zimbabwe comes with unique challenges that a medical app never has to deal with:</p>
+
+        <ol>
+          <li><strong>Connectivity</strong> &mdash; Many farmers don't have consistent internet access. Some don't have smartphones at all.</li>
+          <li><strong>Language</strong> &mdash; Official advice is usually in English, but many farmers are more comfortable in Shona or Ndebele.</li>
+          <li><strong>Literacy</strong> &mdash; Some farmers prefer voice or pictures over text.</li>
+          <li><strong>Cost</strong> &mdash; Farmers can't afford expensive software subscriptions.</li>
+        </ol>
+
+        <hr>
+
+        <h2>What We Set Out to Build</h2>
+
+        <p>FarmMonitor needed to be more than a note-taking app. It needed to be an <strong>entire support system</strong> that works even in the most challenging conditions. Here's what we envisioned:</p>
+
+        <p><strong>For the Extension Officer:</strong></p>
+        <ul>
+          <li>A dashboard showing all their assigned farmers</li>
+          <li>A simple way to log farm visits with observations and recommendations</li>
+          <li>AI that helps draft structured recommendations from raw notes</li>
+          <li>Risk scores showing which farmers need urgent attention</li>
+          <li>Analytics showing whether their advice is actually being followed</li>
+        </ul>
+
+        <p><strong>For the Farmer:</strong></p>
+        <ul>
+          <li>A personal dashboard with weather, crop status, and pending tasks</li>
+          <li>Visit summaries they can review anytime</li>
+          <li>An AI assistant that explains complex advice in simple language</li>
+          <li>Telegram bot access for farmers who prefer messaging apps</li>
+          <li>SMS notifications for farmers without smartphones</li>
+          <li>Input cost tracking with profit/loss calculations</li>
+        </ul>
+
+        <p><strong>The key insight:</strong> The platform doesn't replace the extension officer &mdash; it <strong>amplifies</strong> them. One officer can now effectively support their entire farmer base between visits, because the system handles the follow-up, reminders, and Q&amp;A that they simply don't have time for.</p>
+
+        <hr>
+
+        <h2>The Demo: Making It Real</h2>
+
+        <p>To prove the concept, we built a fully functional demo with real (but fictional) users:</p>
+
+        <ul>
+          <li><strong>3 extension officers</strong> &mdash; John Smith, Rumbidzai Shoko, Amos Dube</li>
+          <li><strong>10 farmers</strong> &mdash; ranging from livestock keepers to maize/soybean farmers to tobacco growers</li>
+          <li><strong>23 farm visits</strong> with detailed observations</li>
+          <li><strong>45 recommendations</strong> at various stages of completion</li>
+          <li><strong>22 crop records</strong> with actual yield data</li>
+          <li><strong>Profile photos</strong> for every user (because real products feel real)</li>
+        </ul>
+
+        <p>Each farmer even has a name that's a Shona word for an animal &mdash; Tsuro (hare), Shumba (lion), Mbizi (zebra). A small touch, but it grounds the demo in Zimbabwean culture.</p>
+
+        <hr>
+
+        <h2>What's Next</h2>
+
+        <p>In <a href="part2-the-ai-brain.html">Part 2</a>, we dive into the brains of the operation &mdash; how we used Claude AI to build a chat system that can explain "integrated pest management" to a farmer who's never heard the term, diagnose crop diseases from a phone photo, and automatically generate smart recommendations from an officer's field notes.</p>
+
+        <p>In <a href="part3-reaching-every-farmer.html">Part 3</a>, we tackle the connectivity challenge &mdash; building Telegram bots and SMS fallback systems to reach farmers who live where the internet doesn't.</p>
+
+        <p>In <a href="part4-the-business-of-farming.html">Part 4</a>, we cover the business side &mdash; how input tracking, profit/loss calculators, and yield benchmarking help farmers make data-driven decisions for the first time.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-the-ai-brain.html">Part 2: Teaching AI to Speak Farmer &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

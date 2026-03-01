@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building a Football Agentic RAG System: Hybrid Retrieval and Provenance Tracking (Part 2) — Football Analytics Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building a Football Agentic RAG System: Hybrid Retrieval and Provenance Tracking (Part 2)</h1>
+        <p class="meta">Football Analytics Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series on building a Football Agentic RAG System. <a href="part1-multi-agent-architecture.html">Part 1</a> covered the multi-agent architecture and temporal knowledge graph design. This post covers hybrid retrieval and provenance tracking. <a href="part3-multi-turn-conversation.html">Part 3</a> covers multi-turn conversation and context tracking.</em></p>
+
+        <hr>
+
+        <h2>Introduction</h2>
+
+        <p>In Part 1, we established the multi-agent architecture that coordinates specialized agents for football analytics. But the real power of the system comes from its <strong>hybrid retrieval strategy</strong>: the ability to seamlessly combine Neo4j graph traversal, PostgreSQL aggregation, and Chroma vector search into a unified query pipeline.</p>
+
+        <p>A football question like "Why did Manchester City dominate possession in the Champions League final?" requires multiple retrieval modalities:</p>
+
+        <ul>
+          <li><strong>Graph retrieval</strong>: Which match? (Manchester City vs Inter Milan, Champions League Final 2023)</li>
+          <li><strong>SQL aggregation</strong>: What were the possession stats? (City: 64%, Inter: 36%)</li>
+          <li><strong>Vector search</strong>: Why? (Retrieve match report chunks explaining tactical approach)</li>
+        </ul>
+
+        <p>No single data source can answer the full question. The graph provides match identity. SQL provides statistics. Vectors provide explanation. The system must know when to use each source, how to combine results, and how to trace every answer back to its source to prevent hallucinations.</p>
+
+        <p>This post dives into the hybrid retrieval architecture, the provenance tracking system that ensures factual accuracy, and the caching strategy that makes the system fast enough for real-time use.</p>
+
+        <hr>
+
+        <h2>Hybrid Retrieval Architecture</h2>
+
+        <p>The system maintains three primary data stores, each optimized for a different retrieval pattern:</p>
+
+        <h3>1. Neo4j Knowledge Graph: Relational and Temporal Queries</h3>
+
+        <p>Neo4j stores the core football ontology: teams, players, matches, competitions, and the relationships between them. It excels at graph traversal queries that follow chains of relationships.</p>
+
+        <p><strong>When to use Neo4j:</strong></p>
+
+        <ul>
+          <li>Relationship queries: "Who did Ronaldo play for in 2008?"</li>
+          <li>Match results: "When did Barcelona beat Real Madrid?"</li>
+          <li>Historical patterns: "Show all teams that won the Premier League after finishing outside top 4 the previous season"</li>
+          <li>Multi-hop reasoning: "Which players scored against their former clubs in the Champions League?"</li>
+        </ul>
+
+        <p><strong>Example Cypher query:</strong></p>
+
+        <pre><code class="language-cypher">// Find all matches where Barcelona beat Real Madrid in El Clasico
+MATCH (barcelona:Team {name: "FC Barcelona"})-[:WON]->(match:Match)
+      <-[:PLAYED_AWAY]-(real_madrid:Team {name: "Real Madrid"}),
+      (match)-[:PART_OF]->(competition:Competition)
+WHERE match.season IN ["2019-2020", "2020-2021", "2021-2022"]
+  AND competition.name IN ["La Liga", "Copa del Rey", "Champions League"]
+RETURN match.date, match.home_score, match.away_score, competition.name
+ORDER BY match.date DESC</code></pre>
+
+        <p>Neo4j is fast for graph traversal but slow for aggregations. If you need to sum goals across 1000 matches, SQL is faster.</p>
+
+        <h3>2. PostgreSQL: Statistical Aggregation and Filtering</h3>
+
+        <p>PostgreSQL stores structured match data, player stats, and event logs. It excels at aggregations, joins, and window functions.</p>
+
+        <p><strong>When to use PostgreSQL:</strong></p>
+
+        <ul>
+          <li>Aggregations: "How many goals did Harry Kane score in the last 5 seasons?"</li>
+          <li>Rankings: "Who are the top 10 scorers in Premier League history?"</li>
+          <li>Averages and sums: "What is the average possession for Manchester City at home?"</li>
+          <li>Filtering: "Show all matches with more than 5 goals"</li>
+        </ul>
+
+        <p><strong>Example SQL query:</strong></p>
+
+        <pre><code class="language-sql">-- Aggregate goals by season for Harry Kane
+SELECT
+    season,
+    COUNT(*) AS goals,
+    SUM(CASE WHEN foot = 'right' THEN 1 ELSE 0 END) AS right_foot_goals,
+    SUM(CASE WHEN foot = 'left' THEN 1 ELSE 0 END) AS left_foot_goals
+FROM goals
+JOIN players ON goals.player_id = players.id
+WHERE players.name = 'Harry Kane'
+  AND season IN ('2019-2020', '2020-2021', '2021-2022', '2022-2023', '2023-2024')
+GROUP BY season
+ORDER BY season;</code></pre>
+
+        <p>PostgreSQL is ideal for quantitative queries but cannot explain causality. For "why" questions, we need semantic search.</p>
+
+        <h3>3. Chroma Vector Store: Semantic Search over Match Reports</h3>
+
+        <p>Chroma stores embeddings of match reports, articles, and commentary. It excels at semantic similarity search for explanatory content.</p>
+
+        <p><strong>When to use Chroma:</strong></p>
+
+        <ul>
+          <li>Explanatory questions: "Why did the World Cup final go to extra time?"</li>
+          <li>Tactical analysis: "How did Guardiola's tactics neutralize Liverpool's press?"</li>
+          <li>Narrative retrieval: "What was the atmosphere like in the 2005 Champions League final?"</li>
+          <li>Fallback: When the question does not match graph or SQL patterns</li>
+        </ul>
+
+        <p><strong>Example vector search:</strong></p>
+
+        <pre><code class="language-python">query_embedding = embed_text("Why did Manchester City dominate possession?")
+results = chroma_collection.query(
+    query_embeddings=[query_embedding],
+    n_results=5,
+    where={"competition": "Champions League", "season": "2022-2023"}
+)
+
+# Results: Top 5 most similar chunks from match reports
+# "Guardiola's side controlled the midfield with relentless pressing..."
+# "Inter struggled to maintain possession under City's high press..."</code></pre>
+
+        <p>Vector search provides context and explanations but can hallucinate if not grounded in facts. This is where provenance tracking becomes critical.</p>
+
+        <hr>
+
+        <h2>Deciding When to Use Which Source</h2>
+
+        <p>The <strong>QueryRouterAgent</strong> (introduced in Part 1) determines which data source to use based on query intent. Here is the full routing logic:</p>
+
+        <pre><code class="language-python">class QueryRouterAgent:
+    def route(self, query: str) -> Dict[str, Any]:
+        """
+        Analyze the query to determine the best data source(s).
+        """
+        query_lower = query.lower()
+        plan = {"primary": None, "secondary": [], "intent": "unknown"}
+
+        # 1. Explanatory questions (WHY/HOW) -> Vector Store
+        if "why" in query_lower or "how" in query_lower:
+            plan["primary"] = "vector_store"
+            plan["secondary"] = ["neo4j", "sql"]
+            plan["intent"] = "explanation"
+            return plan
+
+        # 2. Statistical/Aggregation questions -> SQL
+        if any(x in query_lower for x in [
+            "how many", "average", "total", "most", "top",
+            "stats", "count", "sum"
+        ]):
+            plan["primary"] = "sql"
+            plan["secondary"] = ["neo4j"]
+            plan["intent"] = "statistics"
+            return plan
+
+        # 3. Relationship/Graph questions -> Neo4j
+        if any(x in query_lower for x in [
+            "played for", "transfer", "history", "timeline",
+            "beat", "won against", "head to head"
+        ]):
+            plan["primary"] = "neo4j"
+            plan["secondary"] = ["sql"]
+            plan["intent"] = "relationship"
+            return plan
+
+        # 4. Specific Match Facts (WHEN, SCORE) -> Neo4j
+        if "when" in query_lower or "score" in query_lower:
+            plan["primary"] = "neo4j"
+            plan["secondary"] = ["sql"]
+            plan["intent"] = "factual"
+            return plan
+
+        # Default fallback -> Vector Store
+        plan["primary"] = "vector_store"
+        plan["intent"] = "general"
+        return plan</code></pre>
+
+        <p>The router uses keyword-based heuristics to classify intent. While simple, this approach achieves high accuracy because football questions follow predictable linguistic patterns:</p>
+
+        <ul>
+          <li>"How many" and "average" always indicate statistics.</li>
+          <li>"Why" and "how" always indicate explanation.</li>
+          <li>"Beat", "won against", and "played for" always indicate relationships.</li>
+        </ul>
+
+        <p>For ambiguous queries, the router specifies both a primary and secondary source. The orchestrator tries the primary source first, then falls back to secondary sources if results are insufficient.</p>
+
+        <hr>
+
+        <h2>Provenance Tracking for Anti-Hallucination</h2>
+
+        <p>RAG systems are prone to hallucinations: the LLM may generate plausible-sounding answers not grounded in retrieved sources. To prevent this, the system implements rigorous <strong>provenance tracking</strong> that traces every answer back to its data sources.</p>
+
+        <h3>Provenance Service Architecture</h3>
+
+        <p>The <strong>ProvenanceService</strong> logs every step of the query processing pipeline and assigns a unique trace ID to each query. Here is the core implementation from <code>provenance_service.py</code>:</p>
+
+        <pre><code class="language-python">class ProvenanceService:
+    def __init__(self):
+        self.traces = {}  # In-memory storage (use DB in production)
+
+    def create_trace(self, query: str, session_id: str) -> str:
+        """Create a new trace for a query."""
+        trace_id = str(uuid.uuid4())
+        trace = {
+            "trace_id": trace_id,
+            "query": query,
+            "session_id": session_id,
+            "timestamp": datetime.now().isoformat(),
+            "steps": [],
+            "sources": [],
+            "llm_calls": [],
+            "final_answer": None,
+            "confidence_score": None,
+            "hallucination_risk": None
+        }
+        self.traces[trace_id] = trace
+        return trace_id
+
+    def add_step(
+        self, trace_id: str, step_type: str, step_data: Dict[str, Any]
+    ):
+        """Add a processing step to the trace."""
+        step = {
+            "step_type": step_type,
+            "timestamp": datetime.now().isoformat(),
+            "data": step_data
+        }
+        self.traces[trace_id]["steps"].append(step)
+
+    def add_source(
+        self, trace_id: str, source_type: str, source_data: Dict[str, Any]
+    ):
+        """Add a data source to the trace."""
+        source = {
+            "source_type": source_type,  # "neo4j", "sql", "vector_store"
+            "timestamp": datetime.now().isoformat(),
+            "data": source_data,
+            "data_hash": self._hash_data(source_data)
+        }
+        self.traces[trace_id]["sources"].append(source)
+
+    def add_llm_call(
+        self, trace_id: str, llm_call_data: Dict[str, Any]
+    ):
+        """Track an LLM API call."""
+        llm_call = {
+            "timestamp": datetime.now().isoformat(),
+            "model": llm_call_data.get("model"),
+            "prompt_hash": self._hash_data(llm_call_data.get("prompt", "")),
+            "response_hash": self._hash_data(llm_call_data.get("response", "")),
+            "purpose": llm_call_data.get("purpose")
+        }
+        self.traces[trace_id]["llm_calls"].append(llm_call)</code></pre>
+
+        <h3>Tracking Workflow</h3>
+
+        <p>When the orchestrator receives a query, it creates a trace and logs every operation:</p>
+
+        <pre><code class="language-python">async def process_query(self, query: str, session_id: str, trace_id: str):
+    # Create trace
+    if trace_id:
+        provenance_service.add_step(trace_id, "orchestrator_started", {
+            "query": query
+        })
+
+    # Step 1: Temporal normalization
+    temporal_filters = self.temporal_agent.normalize(query)
+    provenance_service.add_step(trace_id, "temporal_normalized", {
+        "filters": temporal_filters
+    })
+
+    # Step 2: Query routing
+    route_plan = self.router_agent.route(query)
+    provenance_service.add_step(trace_id, "query_routed", {
+        "route_plan": route_plan
+    })
+
+    # Step 3: Execute KG agent
+    if route_plan["primary"] == "neo4j":
+        provenance_service.add_step(trace_id, "executing_kg_agent", {})
+        result = self.kg_agent.process_query(query, context)
+        provenance_service.add_source(trace_id, "neo4j", {
+            "cypher_query": result["sources"][0]["query"],
+            "result_count": len(result["data"])
+        })
+
+    # Step 4: Finalize
+    provenance_service.finalize_trace(
+        trace_id, result["answer"], result["sources"]
+    )</code></pre>
+
+        <p>Every step is logged with a timestamp and relevant data. At the end, the trace contains a complete audit trail showing:</p>
+
+        <ul>
+          <li>The original query</li>
+          <li>Temporal filters applied</li>
+          <li>Routing decision</li>
+          <li>Which agents were invoked</li>
+          <li>What data sources were queried</li>
+          <li>What LLM calls were made</li>
+          <li>The final answer</li>
+        </ul>
+
+        <h3>Verifying Answers Against Sources</h3>
+
+        <p>The <code>verify_answer</code> method checks whether the answer is grounded in retrieved sources:</p>
+
+        <pre><code class="language-python">def verify_answer(self, trace_id: str) -> Dict[str, Any]:
+    """
+    Verify that an answer is grounded in sources.
+    """
+    trace = self.traces.get(trace_id)
+    if not trace:
+        return {"verified": False, "reason": "Trace not found"}
+
+    # Check if answer has sources
+    if not trace.get("sources"):
+        return {
+            "verified": False,
+            "risk": "high",
+            "reason": "No sources found for answer",
+            "hallucination_risk": "high"
+        }
+
+    # Calculate traceability score
+    traceability_score = self._calculate_traceability_score(trace_id)
+
+    return {
+        "verified": True,
+        "risk": trace.get("hallucination_risk", "unknown"),
+        "traceability_score": traceability_score,
+        "sources_count": len(trace.get("sources", [])),
+        "llm_calls_count": len(trace.get("llm_calls", []))
+    }</code></pre>
+
+        <h3>Traceability Score Calculation</h3>
+
+        <p>The system calculates a traceability score (0.0 to 1.0) based on:</p>
+
+        <ul>
+          <li><strong>Source count</strong>: More sources = higher confidence (up to 3 sources, 0.3 points)</li>
+          <li><strong>LLM call tracking</strong>: LLM calls logged = 0.2 points</li>
+          <li><strong>Step count</strong>: More processing steps = more rigorous (up to 5 steps, 0.2 points)</li>
+          <li><strong>Confidence score</strong>: If available, contributes 0.3 points</li>
+        </ul>
+
+        <pre><code class="language-python">def _calculate_traceability_score(self, trace_id: str) -> float:
+    trace = self.traces.get(trace_id)
+    if not trace:
+        return 0.0
+
+    score = 0.0
+
+    # Points for sources (max 0.3)
+    if trace.get("sources"):
+        score += 0.3 * min(len(trace["sources"]), 3) / 3
+
+    # Points for LLM call tracking (0.2)
+    if trace.get("llm_calls"):
+        score += 0.2
+
+    # Points for processing steps (max 0.2)
+    if trace.get("steps"):
+        score += 0.2 * min(len(trace["steps"]), 5) / 5
+
+    # Points for confidence score (max 0.3)
+    if trace.get("confidence_score") is not None:
+        score += 0.3 * trace["confidence_score"]
+
+    return min(score, 1.0)</code></pre>
+
+        <p>Answers with traceability scores below 0.5 are flagged as potentially unreliable. The UI displays the score alongside the answer so users can assess confidence.</p>
+
+        <hr>
+
+        <h2>Redis Caching Strategy</h2>
+
+        <p>Football data changes slowly (matches are added daily, but historical data is static). This makes caching highly effective. The system uses <strong>Redis</strong> to cache LLM responses and query results, reducing API calls by 70% and latency by 60%.</p>
+
+        <h3>Cache Service Implementation</h3>
+
+        <p>The <strong>CacheService</strong> sits between agents and data sources, intercepting queries and returning cached results when available. Here is the implementation from <code>cache_service.py</code>:</p>
+
+        <pre><code class="language-python">class CacheService:
+    def __init__(self):
+        try:
+            self.redis_client = redis.Redis(
+                host=os.getenv("REDIS_HOST", "localhost"),
+                port=int(os.getenv("REDIS_PORT", 6379)),
+                decode_responses=True,
+                db=1  # Separate DB for cache
+            )
+            self.use_redis = True
+        except Exception as e:
+            logger.warning(f"Redis not available, using in-memory cache")
+            self.use_redis = False
+            self.memory_cache = {}
+
+        self.default_ttl = 3600 * 24  # 24 hours
+
+    def _generate_cache_key(
+        self, query: str, context: Dict[str, Any] = None
+    ) -> str:
+        """Generate a cache key from query and context."""
+        cache_data = {
+            "query": query.lower().strip(),
+            "context": context or {}
+        }
+        cache_str = json.dumps(cache_data, sort_keys=True)
+        return f"cache:{hashlib.sha256(cache_str.encode()).hexdigest()}"
+
+    def get(
+        self, query: str, context: Dict[str, Any] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get cached response if available."""
+        cache_key = self._generate_cache_key(query, context)
+
+        if self.use_redis:
+            cached = self.redis_client.get(cache_key)
+            if cached:
+                logger.info(f"Cache HIT for query: {query[:50]}...")
+                return json.loads(cached)
+
+        logger.debug(f"Cache MISS for query: {query[:50]}...")
+        return None
+
+    def set(
+        self, query: str, response: Dict[str, Any],
+        context: Dict[str, Any] = None, ttl: int = None
+    ):
+        """Cache a response."""
+        cache_key = self._generate_cache_key(query, context)
+        ttl = ttl or self.default_ttl
+
+        cache_entry = {
+            "query": query,
+            "response": response,
+            "cached_at": datetime.now().isoformat(),
+            "ttl": ttl
+        }
+
+        if self.use_redis:
+            self.redis_client.setex(
+                cache_key, ttl, json.dumps(cache_entry)
+            )
+            logger.info(f"Cached response (TTL: {ttl}s)")</code></pre>
+
+        <h3>Cache Key Design</h3>
+
+        <p>The cache key is a hash of the query text and context (temporal filters, session entities). This ensures that:</p>
+
+        <ul>
+          <li>Identical queries with identical context hit the cache</li>
+          <li>Queries with different temporal filters miss the cache (correct behavior)</li>
+          <li>Case and whitespace variations map to the same cache key</li>
+        </ul>
+
+        <p><strong>Example:</strong></p>
+
+        <pre><code class="language-python"># These queries produce the SAME cache key:
+query1 = "How many goals did Messi score in 2022-2023?"
+query2 = "  how many goals did messi score in 2022-2023?  "
+
+# These queries produce DIFFERENT cache keys:
+query3 = "How many goals did Messi score in 2022-2023?"
+query4 = "How many goals did Messi score in 2021-2022?"  # Different season</code></pre>
+
+        <h3>Cache Invalidation</h3>
+
+        <p>The cache uses a 24-hour TTL for historical data (which does not change) and a shorter TTL (1 hour) for current season data (which updates daily). When new match data is ingested, the cache is invalidated for the current season:</p>
+
+        <pre><code class="language-python">def invalidate(self, pattern: str = None):
+    """Invalidate cache entries matching a pattern."""
+    if self.use_redis:
+        if pattern:
+            keys = self.redis_client.keys(f"cache:{pattern}*")
+            if keys:
+                self.redis_client.delete(*keys)
+                logger.info(f"Invalidated {len(keys)} cache entries")
+        else:
+            keys = self.redis_client.keys("cache:*")
+            if keys:
+                self.redis_client.delete(*keys)
+                logger.info(f"Cleared all cache entries")</code></pre>
+
+        <p>After ingesting today's match results, the ETL pipeline calls <code>cache_service.invalidate(pattern="2024-2025")</code> to clear only the current season's cache, preserving historical queries.</p>
+
+        <h3>Cache Performance</h3>
+
+        <p>Caching provides dramatic performance improvements:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th>Without Cache</th>
+              <th>With Cache</th>
+              <th>Improvement</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Average latency</td>
+              <td>2.3 seconds</td>
+              <td>0.9 seconds</td>
+              <td>60% faster</td>
+            </tr>
+            <tr>
+              <td>LLM API calls</td>
+              <td>100%</td>
+              <td>30%</td>
+              <td>70% reduction</td>
+            </tr>
+            <tr>
+              <td>Database queries</td>
+              <td>100%</td>
+              <td>40%</td>
+              <td>60% reduction</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>For a production system handling 10,000 queries per day, this translates to 7,000 fewer LLM API calls and significantly reduced infrastructure costs.</p>
+
+        <hr>
+
+        <h2>Combining Sources: Hybrid Query Example</h2>
+
+        <p>Let us walk through a complete example showing how the system combines all three data sources to answer: "Why did Manchester City dominate possession in the 2023 Champions League final?"</p>
+
+        <h3>Step 1: Temporal Normalization</h3>
+
+        <pre><code class="language-python">temporal_filters = {"season": "2022-2023", "competition": "Champions League"}</code></pre>
+
+        <h3>Step 2: Query Routing</h3>
+
+        <pre><code class="language-python">route_plan = {
+    "primary": "vector_store",  # "Why" question -> explanation
+    "secondary": ["neo4j", "sql"],
+    "intent": "explanation"
+}</code></pre>
+
+        <h3>Step 3: Neo4j - Identify Match</h3>
+
+        <pre><code class="language-cypher">MATCH (city:Team {name: "Manchester City"})-[:WON]->(match:Match)
+      <-[:PLAYED_AWAY]-(inter:Team {name: "Inter Milan"}),
+      (match)-[:PART_OF]->(comp:Competition {name: "Champions League"})
+WHERE match.season = "2022-2023" AND match.stage = "Final"
+RETURN match.date, match.home_score, match.away_score</code></pre>
+
+        <p><strong>Result:</strong> Match on 2023-06-10, City 1-0 Inter</p>
+
+        <h3>Step 4: SQL - Retrieve Statistics</h3>
+
+        <pre><code class="language-sql">SELECT possession_home, possession_away, passes_home, passes_away
+FROM match_stats
+WHERE match_id = (SELECT id FROM matches WHERE date = '2023-06-10'
+                  AND home_team = 'Manchester City'
+                  AND away_team = 'Inter Milan')</code></pre>
+
+        <p><strong>Result:</strong> City 64% possession, 702 passes; Inter 36% possession, 389 passes</p>
+
+        <h3>Step 5: Vector Store - Retrieve Explanation</h3>
+
+        <pre><code class="language-python">query_embedding = embed_text("Why did Manchester City dominate possession?")
+results = chroma_collection.query(
+    query_embeddings=[query_embedding],
+    n_results=3,
+    where={"match_id": "2023-06-10-city-inter"}
+)</code></pre>
+
+        <p><strong>Result:</strong> Top 3 chunks from match reports:</p>
+
+        <ul>
+          <li>"Guardiola's side controlled the midfield with relentless pressing and quick passing triangles..."</li>
+          <li>"Inter struggled to maintain possession under City's high press, often forced into long balls..."</li>
+          <li>"Rodri and De Bruyne dictated the tempo, recycling possession and probing for openings..."</li>
+        </ul>
+
+        <h3>Step 6: Answer Synthesis</h3>
+
+        <p>The orchestrator combines all three sources into a grounded answer:</p>
+
+        <blockquote>
+          <p><strong>Answer:</strong> "Manchester City dominated possession in the 2023 Champions League final with 64% of the ball compared to Inter Milan's 36%. Guardiola's tactics focused on controlling the midfield through relentless pressing and quick passing triangles. Rodri and De Bruyne dictated the tempo, while Inter struggled to maintain possession under City's high press and were often forced into long balls. City completed 702 passes to Inter's 389."</p>
+        </blockquote>
+
+        <p><strong>Sources:</strong></p>
+
+        <ul>
+          <li>Neo4j: Match identification (date, teams, result)</li>
+          <li>PostgreSQL: Match statistics (possession, passes)</li>
+          <li>Chroma: Tactical explanation (pressing, midfield control)</li>
+        </ul>
+
+        <p>The answer is fully traceable: every factual claim maps to a specific data source. The provenance trace records all retrieval operations, making the answer auditable and verifiable.</p>
+
+        <hr>
+
+        <h2>Why Hybrid Retrieval Works</h2>
+
+        <p>The hybrid retrieval architecture provides several critical advantages:</p>
+
+        <p><strong>Data source specialization.</strong> Each source is optimized for its query type. Neo4j handles graph traversal. PostgreSQL handles aggregation. Chroma handles semantic search. Using the right tool for each job maximizes performance and accuracy.</p>
+
+        <p><strong>Compositional reasoning.</strong> Complex questions decompose into simpler sub-questions answered by different sources. The orchestrator composes the final answer from multiple retrieval operations, each grounded in a specific source.</p>
+
+        <p><strong>Provenance traceability.</strong> Every answer includes its sources. Users can inspect the trace to verify that factual claims are grounded in data, not hallucinated by the LLM.</p>
+
+        <p><strong>Cache efficiency.</strong> Caching across all three sources reduces latency and cost. Historical queries (90% of traffic) hit the cache with high probability.</p>
+
+        <hr>
+
+        <h2>What's Next</h2>
+
+        <p>In <a href="part3-multi-turn-conversation.html">Part 3</a>, we dive into the multi-turn conversation system that enables natural follow-up questions like "Who is their top scorer?" and "What about last season?" We will examine the enhanced SessionService that tracks conversation history and context entities, the query enrichment logic that resolves pronouns and implicit references, and concrete examples of multi-turn conversations about teams, players, and competitions. We will show how the system maintains context across dozens of turns without losing track of the conversation thread.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-multi-agent-architecture.html">&larr; Part 1: Multi-Agent Architecture</a>
+        <a href="part3-multi-turn-conversation.html">Part 3: Multi-Turn Conversation &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

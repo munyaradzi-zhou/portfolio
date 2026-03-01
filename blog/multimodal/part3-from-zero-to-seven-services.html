@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>From Zero to Seven Services in a Day (Part 3) — Multimodal AI Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>From Zero to Seven Services in a Day</h1>
+        <p class="meta">Multimodal AI Assistant Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series. In <a href="part1-what-if-your-ai-could-see-hear-and-read.html">Part 1</a>, we explained what multimodal AI is and why it matters. In <a href="part2-how-seven-azure-services-talk.html">Part 2</a>, we traced data through the system. Now for the part developers actually want to read: how we built it.</em></p>
+
+        <hr>
+
+        <h2>The Final Project Structure</h2>
+
+        <p>24 files, organized into three layers:</p>
+
+<pre><code>multimodal-ai-assistant/
+|
++-- config.py                    &larr; One file to rule all 7 services
++-- requirements.txt             &larr; 13 dependencies, all pinned
++-- .env.example                 &larr; Template with placeholders
+|
++-- api/                         &larr; The brain
+|   +-- main.py                  &larr; FastAPI app + startup logic
+|   +-- schemas.py               &larr; What goes in, what comes out
+|   +-- routes/                  &larr; 5 route files (one per feature area)
+|   |   +-- vision.py            &larr; Image analysis + Q&amp;A
+|   |   +-- speech.py            &larr; Transcription + synthesis
+|   |   +-- language.py          &larr; NER, PII, sentiment, key phrases
+|   |   +-- multimodal.py        &larr; Everything at once
+|   |   +-- history.py           &larr; Browse past analyses
+|   +-- services/                &larr; 7 service wrappers
+|       +-- vision_client.py
+|       +-- speech_client.py
+|       +-- language_client.py
+|       +-- content_safety.py
+|       +-- openai_client.py
+|       +-- blob_storage.py
+|       +-- cosmos_db.py
+|
++-- frontend/                    &larr; The face
+|   +-- app.py                   &larr; Streamlit dashboard (5 tabs)
+|
++-- docker-compose.yml           &larr; Run everything with one command
++-- Dockerfile.api               &larr; API container (with Speech SDK deps)
++-- Dockerfile.frontend          &larr; Streamlit container</code></pre>
+
+        <p>Three layers, three responsibilities: <strong>Services</strong> wrap each Azure SDK, <strong>Routes</strong> wire those functions to HTTP endpoints, and the <strong>Frontend</strong> calls the endpoints and renders results. Each layer only knows about the layer below it.</p>
+
+        <hr>
+
+        <h2>Pattern 1: The Config File</h2>
+
+        <p>With 7 Azure services, you have <strong>15 configuration values</strong>. Scattering these across different files is a recipe for chaos. Instead, we put them all in one place:</p>
+
+<pre><code class="language-python">from pydantic_settings import BaseSettings
+from functools import lru_cache
+
+class Settings(BaseSettings):
+    # Azure AI Vision
+    azure_vision_endpoint: str
+    azure_vision_key: str
+
+    # Azure AI Speech (region, NOT endpoint)
+    azure_speech_key: str
+    azure_speech_region: str
+
+    # Azure AI Language
+    azure_language_endpoint: str
+    azure_language_key: str
+
+    # ... and so on for all 7 services
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()</code></pre>
+
+        <p>This does three powerful things:</p>
+        <ol>
+          <li><strong>Validation at startup.</strong> If any required key is missing, the app crashes immediately with a clear error &mdash; not 10 minutes later when someone tries to upload an image.</li>
+          <li><strong>Single import.</strong> Every service file does <code>from config import get_settings</code> and gets access to everything.</li>
+          <li><strong>Caching.</strong> The <code>@lru_cache</code> decorator means the settings are loaded once and reused.</li>
+        </ol>
+
+        <hr>
+
+        <h2>Pattern 2: The Singleton Service Client</h2>
+
+        <p>Each Azure service needs a client object. Creating a new client for every request is wasteful. So we use a simple singleton pattern:</p>
+
+<pre><code class="language-python">_client = None  # Module-level variable
+
+def get_vision_client():
+    global _client
+    if _client is None:
+        settings = get_settings()
+        _client = ImageAnalysisClient(
+            endpoint=settings.azure_vision_endpoint,
+            credential=AzureKeyCredential(settings.azure_vision_key),
+        )
+    return _client</code></pre>
+
+        <p>First call: creates the client. Every call after that: returns the same client. We used this pattern for all 7 services. The only variation is the Speech SDK, which creates a <code>SpeechConfig</code> each time because recognizer/synthesizer objects are inherently single-use.</p>
+
+        <hr>
+
+        <h2>Pattern 3: UUID-Prefixed File Names</h2>
+
+        <p>When you let users upload files, name collisions are inevitable. Our solution: prefix every filename with 8 random hexadecimal characters.</p>
+
+<pre><code class="language-python">import uuid
+
+def upload_file(filename, content, content_type):
+    blob_name = f"{uuid.uuid4().hex[:8]}_{filename}"
+    # "image.jpg" becomes "f67c8117_image.jpg"</code></pre>
+
+        <p>The original filename is preserved (useful for display), but the stored name is unique. The chance of a collision with 8 hex characters is about 1 in 4 billion.</p>
+
+        <hr>
+
+        <h2>Building the Service Layer: Seven Wrappers</h2>
+
+        <h3>Vision Client &mdash; 5 Features in One Call</h3>
+
+        <p>The Azure Vision SDK lets you request multiple visual features in a single API call:</p>
+
+<pre><code class="language-python">result = client.analyze(
+    image_data=image_bytes,
+    visual_features=[
+        VisualFeatures.CAPTION,
+        VisualFeatures.DENSE_CAPTIONS,
+        VisualFeatures.TAGS,
+        VisualFeatures.OBJECTS,
+        VisualFeatures.READ,       # OCR
+    ],
+)</code></pre>
+
+        <p>One API call, five types of analysis. Both faster and cheaper than making separate calls.</p>
+
+        <h3>Language Client &mdash; 5 Features, 5 Calls</h3>
+
+        <p>The Language SDK is different. Each NLP feature is a separate method call:</p>
+
+<pre><code class="language-python">lang_results = client.detect_language(documents=[text])
+sent_results = client.analyze_sentiment(documents=[text])
+ner_results  = client.recognize_entities(documents=[text])
+pii_results  = client.recognize_pii_entities(documents=[text])
+kp_results   = client.extract_key_phrases(documents=[text])</code></pre>
+
+        <p>That's 5 API calls per analysis. On the free tier (5,000 transactions/month), this means about 1,000 full analyses per month.</p>
+
+        <h3>Speech Client &mdash; The Most Complex Service</h3>
+
+        <p>Speech-to-text with continuous recognition is the most code-intensive wrapper:</p>
+
+<pre><code class="language-python">def transcribe_audio(audio_bytes, filename):
+    # 1. Write bytes to a temp file
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
+    # 2. Set up recognition with callbacks
+    recognizer = SpeechRecognizer(speech_config, AudioConfig(filename=tmp_path))
+
+    all_results = []
+    done = threading.Event()
+
+    def on_recognized(evt):
+        all_results.append(evt.result.text)
+
+    def on_session_stopped(evt):
+        done.set()
+
+    recognizer.recognized.connect(on_recognized)
+    recognizer.session_stopped.connect(on_session_stopped)
+
+    # 3. Start and wait
+    recognizer.start_continuous_recognition()
+    done.wait(timeout=120)
+    recognizer.stop_continuous_recognition()
+
+    # 4. Clean up
+    os.unlink(tmp_path)
+
+    return {"text": " ".join(all_results), "segments": all_results}</code></pre>
+
+        <p>The key insight: continuous recognition is <strong>event-driven</strong>. The <code>on_recognized</code> callback fires each time a segment of speech is transcribed. The <code>on_session_stopped</code> callback fires when the entire file has been processed. This is fundamentally different from the other services, which are simple request-response calls.</p>
+
+        <hr>
+
+        <h2>The API Layer: Routes That Orchestrate</h2>
+
+        <p>Each route file is about 40&ndash;70 lines. They don't contain business logic &mdash; they <em>orchestrate</em> the service layer:</p>
+
+<pre><code class="language-python">@router.post("/analyze")
+async def analyze_image(image: UploadFile = File(...)):
+    content = await image.read()                    # 1. Read input
+    safety = content_safety.check_image(content)    # 2. Safety check
+    blob_url = blob_storage.upload_file(...)        # 3. Store the file
+    result = vision_client.analyze_image(content)   # 4. Do the analysis
+    cosmos_db.save_analysis({...})                   # 5. Save to database
+    return result                                   # 6. Return to user</code></pre>
+
+        <p>Read, check, store, analyze, save, return. Every route follows this rhythm.</p>
+
+        <hr>
+
+        <h2>The Docker Setup: Two Containers, One Network</h2>
+
+<pre><code class="language-yaml">services:
+  api:
+    build:
+      dockerfile: Dockerfile.api
+    ports:
+      - "8005:8005"
+    env_file: .env
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')"]
+
+  frontend:
+    build:
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8507:8507"
+    environment:
+      - API_BASE=http://api:8005
+    depends_on:
+      api:
+        condition: service_healthy</code></pre>
+
+        <p>Two important details:</p>
+        <ol>
+          <li><strong>The frontend waits for the API.</strong> The <code>depends_on: condition: service_healthy</code> line means Docker won't start the frontend until the API's health check passes.</li>
+          <li><strong>The API Dockerfile installs system libraries.</strong> The Speech SDK needs <code>libssl-dev</code> (for encrypted connections) and <code>libasound2</code> (for audio processing). Without these, the container crashes on import with a cryptic shared library error.</li>
+        </ol>
+
+        <hr>
+
+        <h2>Lessons Learned</h2>
+
+        <p><strong>1. Speech SDK auth is different from everything else.</strong> Every other Azure AI service uses <code>Client(endpoint=URL, credential=Key)</code>. Speech SDK uses <code>SpeechConfig(subscription=key, region="eastus")</code>. Region is a short string, not a URL. This will waste 30 minutes of your life if you don't know it.</p>
+
+        <p><strong>2. Free tiers are generous enough for real development.</strong> We ran dozens of tests across all 4 new services and never came close to the free tier limits.</p>
+
+        <p><strong>3. Content Safety is remarkably fast.</strong> Each safety check takes about 200&ndash;500ms. The GPT-4o call at 5&ndash;8 seconds is always the bottleneck.</p>
+
+        <p><strong>4. Sentiment analysis measures words, not intent.</strong> "I overcame terrible obstacles" scores as partly negative because of "terrible obstacles." If your application needs to detect <em>intent</em> rather than <em>tone</em>, you'll need GPT-4o for that.</p>
+
+        <p><strong>5. Cosmos DB partition keys should be immutable.</strong> Use the document ID (which never changes) as your partition key, not a field that might change during processing.</p>
+
+        <p><strong>6. Base64 encoding inflates image size by 33%.</strong> A 100 KB image becomes about 133 KB when base64-encoded for GPT-4o. For large images, consider resizing before encoding.</p>
+
+        <p><strong>7. Docker containers don't have audio hardware.</strong> File-based I/O with temp files is the solution, and it works perfectly.</p>
+
+        <p><strong>8. The <code>@lru_cache</code> config pattern prevents repeated file reads.</strong> Without caching, every service call would re-read the <code>.env</code> file.</p>
+
+        <hr>
+
+        <h2>The Numbers</h2>
+
+        <table>
+          <thead>
+            <tr><th>Metric</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Total files</td><td>24</td></tr>
+            <tr><td>Lines of Python (API)</td><td>~750</td></tr>
+            <tr><td>Lines of Python (Frontend)</td><td>~500</td></tr>
+            <tr><td>Azure services integrated</td><td>7</td></tr>
+            <tr><td>API endpoints</td><td>10</td></tr>
+            <tr><td>Pydantic schema models</td><td>15</td></tr>
+            <tr><td>Frontend tabs</td><td>5</td></tr>
+            <tr><td>Docker containers</td><td>2</td></tr>
+            <tr><td>pip dependencies</td><td>13</td></tr>
+            <tr><td>Config settings</td><td>15</td></tr>
+            <tr><td>Build time (docker compose)</td><td>~90 seconds</td></tr>
+            <tr><td>Monthly cost (development)</td><td>~$5&ndash;10</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>What Would We Do Differently?</h2>
+
+        <p><strong>Add async calls where possible.</strong> Our Vision, Language, and Content Safety calls are synchronous. Making them async with <code>asyncio.gather()</code> would let us run analyses in parallel during the multimodal endpoint, cutting latency by 2&ndash;3 seconds.</p>
+
+        <p><strong>Add image resizing.</strong> Large images (5+ MB) sent to GPT-4o as base64 are expensive in tokens. A preprocessing step that resizes to 1024px max would cut costs with minimal quality loss.</p>
+
+        <p><strong>Add response caching.</strong> If the same image is analyzed twice, we currently make all the API calls again. A content-hash-based cache would save time and money.</p>
+
+        <p>But these are optimizations, not necessities. The system works well as-is, and premature optimization is the root of all evil.</p>
+
+        <hr>
+
+        <h2>The One-Command Deploy</h2>
+
+        <p>After all that architecture, deploying the whole thing is one command:</p>
+
+<pre><code class="language-bash">docker compose up --build -d</code></pre>
+
+        <p>Ninety seconds later, the API is live on port 8005, the dashboard is live on port 8507, and you're analyzing images, transcribing audio, and detecting PII. Seven Azure services, two containers, zero manual configuration beyond the <code>.env</code> file.</p>
+
+        <p>That's the power of good architecture: complexity behind the scenes, simplicity at the surface.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-how-seven-azure-services-talk.html">&larr; Part 2: How 7 Azure Services Talk</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

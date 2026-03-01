@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deployment, Live Results, and What I Learned (Part 3) — Multi-Agent Research Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Deployment, Live Results, and What I Learned</h1>
+        <p class="meta">Multi-Agent Research Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series. In <a href="part1-architecture.html">Part 1</a>, I covered the architecture. In <a href="part2-building-agents.html">Part 2</a>, I built each agent with enforced quality constraints. Now let's put it all into production.</em></p>
+
+        <hr>
+
+        <h2>The API Layer: REST + WebSocket</h2>
+
+<pre><code class="language-python"># Compile the LangGraph once at startup
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global graph
+    graph = build_graph()
+    yield
+
+# Synchronous &mdash; waits for full pipeline
+@app.post("/research")
+async def run_research(request: ResearchRequest):
+    result = await graph.ainvoke(initial_state)
+    return ResearchResponse(
+        final_report=result["final_output"],
+        revision_count=result["revision_count"],
+        critique_summary=result["critique"],
+    )
+
+# Real-time streaming &mdash; sends updates as each agent completes
+@app.websocket("/ws/research")
+async def research_stream(websocket: WebSocket):
+    await websocket.accept()
+    async for chunk in graph.astream(initial_state):
+        for agent_name, agent_output in chunk.items():
+            await websocket.send_json({
+                "agent": agent_name,
+                "status": "completed",
+                "content": json.dumps(agent_output),
+            })
+    await websocket.send_json({
+        "agent": "system", "status": "done",
+        "content": "Research pipeline completed",
+    })</code></pre>
+
+        <p>The key design decision: <strong><code>graph.ainvoke()</code> vs <code>graph.astream()</code></strong>. Both execute the same pipeline. <code>ainvoke()</code> returns only the final state &mdash; perfect for REST. <code>astream()</code> yields incremental updates as each node completes &mdash; perfect for WebSocket that powers the real-time frontend.</p>
+
+        <h3>Pydantic Validation</h3>
+
+<pre><code class="language-python">class ResearchRequest(BaseModel):
+    query: str = Field(..., min_length=10, max_length=2000)</code></pre>
+
+        <p>This catches garbage inputs before they consume LLM tokens. A query must be 10&ndash;2,000 characters.</p>
+
+        <hr>
+
+        <h2>The Streamlit Dashboard</h2>
+
+        <h3>Pipeline Progress Visualization</h3>
+
+<pre><code>[========] [========] [........] [        ]
+ Researcher  Analyst    Writer     Critic
+ Completed   Completed  Working    Pending</code></pre>
+
+        <p>Green segments pulse when active, turn solid when complete, and stay gray when pending.</p>
+
+        <h3>WebSocket Integration in Streamlit</h3>
+
+        <p>Streamlit's execution model is synchronous &mdash; every widget interaction re-runs the entire script. The solution: run the WebSocket client in a background thread and poll for updates.</p>
+
+<pre><code class="language-python">def _run_websocket_pipeline(query: str, result_holder: dict):
+    """Runs in a background thread."""
+    import websockets.sync.client as ws_sync
+
+    with ws_sync.connect(WS_URL, close_timeout=300) as ws:
+        ws.send(json.dumps({"query": query}))
+        while True:
+            raw = ws.recv()
+            data = json.loads(raw)
+            result_holder["updates"].append(data)
+            if data["status"] in ("done", "error"):
+                break
+
+# In the main Streamlit thread:
+thread = threading.Thread(target=_run_websocket_pipeline,
+                          args=(query, result_holder), daemon=True)
+thread.start()
+
+# Poll for updates every 0.5s
+while not result_holder["done"]:
+    time.sleep(0.5)
+    # Update progress bars, agent cards, status banners</code></pre>
+
+        <h3>Five-Tab Results View</h3>
+
+        <ol>
+          <li><strong>Report</strong> &mdash; full markdown report with download buttons (.md and .json export)</li>
+          <li><strong>Agent Log</strong> &mdash; timeline showing each agent's completion time and output summary</li>
+          <li><strong>Research Notes</strong> &mdash; raw output from the Researcher (5,375 chars of cited notes)</li>
+          <li><strong>Analysis Data</strong> &mdash; structured JSON from the Analyst with visual hierarchy</li>
+          <li><strong>Critic Feedback</strong> &mdash; score breakdown with progress bars and revision instructions</li>
+        </ol>
+
+        <hr>
+
+        <h2>Docker Deployment</h2>
+
+<pre><code class="language-yaml">services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    depends_on:
+      - qdrant
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped</code></pre>
+
+        <p><code>depends_on</code> ensures Qdrant starts before the API, and <code>restart: unless-stopped</code> keeps both services running after crashes. First-time startup takes ~30 seconds. Subsequent starts are under 5 seconds thanks to Docker layer caching.</p>
+
+        <hr>
+
+        <h2>Multi-Cloud CI/CD</h2>
+
+        <p>Push to <code>main</code> triggers two parallel GitHub Actions pipelines:</p>
+
+        <h3>AWS Deployment</h3>
+
+<pre><code>Push to main
+    |
+    +-- Job 1: Test
+    |   +-- ruff check (linting)
+    |   +-- pyright (type checking)
+    |
+    +-- Job 2: Deploy (if tests pass)
+        +-- Configure AWS OIDC credentials
+        +-- docker build --tag commit-sha
+        +-- docker push to ECR
+        +-- aws ecs update-service --force-new-deployment</code></pre>
+
+        <h3>Azure Deployment</h3>
+
+<pre><code>Push to main
+    |
+    +-- Job 1: Test (same as AWS)
+    |
+    +-- Job 2: Deploy (if tests pass)
+        +-- Azure login (OIDC federated credentials)
+        +-- docker build --tag commit-sha
+        +-- docker push to ACR
+        +-- az containerapp update --image new-revision</code></pre>
+
+        <p><strong>Why dual deployment?</strong> Demonstration that the architecture is cloud-agnostic. The same Dockerfile, same environment variables, same API endpoints &mdash; just different container registries and orchestrators.</p>
+
+        <hr>
+
+        <h2>The Evaluation Framework</h2>
+
+<pre><code class="language-python">TEST_CASES = [
+    {
+        "query": "LLM deployment challenges in production",
+        "expected_themes": ["latency", "cost", "scaling", "monitoring", "hallucination"],
+        "min_word_count": 500,
+    },
+    {
+        "query": "Environmental impact: EVs vs hydrogen fuel cells",
+        "expected_themes": ["emissions", "infrastructure", "cost", "efficiency", "policy"],
+        "min_word_count": 500,
+    },
+    {
+        "query": "Quantum computing state and cryptography impact",
+        "expected_themes": ["qubits", "encryption", "post-quantum", "timeline", "applications"],
+        "min_word_count": 500,
+    },
+]</code></pre>
+
+        <table>
+          <thead>
+            <tr><th>Metric</th><th>How It's Measured</th><th>Pass Threshold</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Word count</strong></td><td><code>len(output.split())</code></td><td>&ge; 500 words</td></tr>
+            <tr><td><strong>Theme coverage</strong></td><td>Fraction of expected themes found</td><td>&ge; 0.4 (2/5 themes)</td></tr>
+            <tr><td><strong>Has sources</strong></td><td><code>"http" in output</code></td><td>True</td></tr>
+            <tr><td><strong>Has structure</strong></td><td><code>output.count("##") &ge; 2</code></td><td>True</td></tr>
+            <tr><td><strong>Latency</strong></td><td>Wall-clock seconds</td><td>Recorded (no threshold)</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>Live Pipeline Walkthrough</h2>
+
+        <h3>Test 1: LLM Deployment (First-Pass Approval)</h3>
+
+        <table>
+          <thead>
+            <tr><th>Step</th><th>Time</th><th>Output Summary</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Memory recall</td><td>1.51s</td><td>3 prior entries (scores: 0.73, 0.66, 0.25)</td></tr>
+            <tr><td>Sub-query generation</td><td>~2.0s</td><td>3 targeted queries (GPT-4o-mini)</td></tr>
+            <tr><td>Tavily search (3x parallel)</td><td>~8.0s</td><td>24 results &rarr; 23 unique after dedup</td></tr>
+            <tr><td>Research synthesis</td><td>~24.0s</td><td>5,375 chars, 6 sections, GPT-4o</td></tr>
+            <tr><td>Analysis</td><td>19.30s</td><td>7 themes, 5 findings, 5 data points</td></tr>
+            <tr><td>Draft</td><td>32.61s</td><td>6,399 chars, 589 words, 10+ sources</td></tr>
+            <tr><td>Critique</td><td>16.84s</td><td>9/8/9 &rarr; 8.7/10 APPROVED</td></tr>
+            <tr><td><strong>Total</strong></td><td><strong>107.68s</strong></td><td><strong>First-pass approval, 0 revisions</strong></td></tr>
+          </tbody>
+        </table>
+
+        <h3>Test 2: Quantum Computing</h3>
+
+        <p>The quantum computing query produced a 7,427-character report covering processor performance, market growth ($928.8M in 2023 &rarr; $6.5B by 2030, 32.1% CAGR), practical applications, and cryptography implications &mdash; all with inline citations. <strong>Total: 111.46 seconds.</strong></p>
+
+        <hr>
+
+        <h2>Performance Analysis</h2>
+
+        <h3>Latency Breakdown</h3>
+
+<pre><code>Researcher:  ====================================     38.93s (36%)
+Analyst:     ====================                     19.30s (18%)
+Writer:      ==================================       32.61s (30%)
+Critic:      =================                        16.84s (16%)
+                                              Total: 107.68s</code></pre>
+
+        <p>The Researcher and Writer dominate &mdash; both involve GPT-4o processing large amounts of text. The Analyst and Critic are faster because they process structured data with deterministic (temperature 0.0) settings.</p>
+
+        <h3>Cost per Query</h3>
+
+        <table>
+          <thead>
+            <tr><th>Component</th><th>Model</th><th>Cost</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Sub-query generation</td><td>GPT-4o-mini</td><td>~$0.001</td></tr>
+            <tr><td>Research synthesis</td><td>GPT-4o</td><td>~$0.03</td></tr>
+            <tr><td>Analysis</td><td>GPT-4o</td><td>~$0.02</td></tr>
+            <tr><td>Writing</td><td>GPT-4o</td><td>~$0.03</td></tr>
+            <tr><td>Critique</td><td>GPT-4o</td><td>~$0.01</td></tr>
+            <tr><td>Embeddings (2x)</td><td>text-embedding-3-small</td><td>~$0.0001</td></tr>
+            <tr><td>Tavily search (3x)</td><td>Tavily API</td><td>Free tier</td></tr>
+            <tr><td><strong>Total</strong></td><td></td><td><strong>~$0.09 per query</strong></td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>Seven Lessons Learned</h2>
+
+        <p><strong>1. Calibrate your Critic, or it will destroy your pipeline.</strong> The single biggest improvement from v1.0 to v2.0 was adding calibration rules to the Critic's scoring rubric. Without them, the Critic scored Completeness at 5&ndash;6/10 on every report, triggering 3 revision cycles every time. Adding "3+ angles with citations &rarr; auto &ge; 7" eliminated this problem overnight.</p>
+
+        <p><strong>2. Enforce quantitative constraints in prompts.</strong> Telling an LLM to "extract data points" produces 0&ndash;2 data points. Telling it "extract a minimum of 5 quantitative data points including market sizes, growth rates, dates, and performance metrics" produces exactly 5.</p>
+
+        <p><strong>3. Parallel search is free performance.</strong> Running 3 Tavily searches with <code>asyncio.gather()</code> takes the same time as 1 search but gives you 4.6x the sources.</p>
+
+        <p><strong>4. Max 2 revision instructions prevents analysis paralysis.</strong> When the Critic returns 5 revision instructions, the Writer tries to address all of them and does a poor job on each. Capping at 2 focused instructions produces much better targeted revisions.</p>
+
+        <p><strong>5. Graceful degradation beats hard failures.</strong> If Qdrant is down, the Researcher skips memory recall and does fresh web searches. The pipeline never crashes &mdash; it just runs slightly less informed.</p>
+
+        <p><strong>6. WebSocket streaming changes the user experience.</strong> A 108-second pipeline feels like "the app is broken" with a spinner. With WebSocket streaming showing each agent's progress, the same 108 seconds feels like watching a team work.</p>
+
+        <p><strong>7. The hardest part isn't the code &mdash; it's the prompts.</strong> The entire orchestration layer is 63 lines. The API is 173 lines. The prompts template is 154 lines &mdash; and it's the file that changed the most between v1.0 and v2.0. The code is plumbing; the prompts are the product.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-building-agents.html">&larr; Part 2: Building the Agents</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

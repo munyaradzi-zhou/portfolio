@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architecture &amp; ETL Pipeline (Part 1) &mdash; Semantic Product Recommendation Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Architecture &amp; ETL Pipeline &mdash; Building a Semantic Product Recommendation Engine</h1>
+        <p class="meta">Semantic Product Recommendation Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>Part 1 of 3: How we designed a multimodal recommendation system that ingests 100 real Amazon products, generates dual-vector embeddings, and indexes them for similarity search in under 9 minutes. <a href="part2-recommendation-strategies.html">Part 2</a> covers the 4 recommendation strategies. <a href="part3-frontend-deployment-lessons.html">Part 3</a> covers the frontend, deployment, and lessons learned.</em></p>
+
+        <hr>
+
+        <h2>The Problem</h2>
+
+        <p>Product recommendations are everywhere &mdash; Amazon, Netflix, Spotify &mdash; but building one from scratch exposes some genuinely interesting engineering problems:</p>
+
+        <ul>
+          <li>How do you represent a product as a searchable vector when it has <em>both</em> text descriptions <em>and</em> images?</li>
+          <li>How do you combine visual and semantic similarity in a single search query?</li>
+          <li>How do you personalize results for a user who has only interacted with 3 products?</li>
+        </ul>
+
+        <p>This series walks through a production-grade answer to all three, built entirely on Azure AI services. No ML model training. No GPU infrastructure. Just clever orchestration of managed services.</p>
+
+        <h2>What We Built</h2>
+
+        <table>
+          <thead>
+            <tr><th>Strategy</th><th>How It Works</th><th>Example</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Similar Products</strong></td><td>Dual-vector search (text 70% + image 30%)</td><td>"Show me products like this Canon ink cartridge"</td></tr>
+            <tr><td><strong>Text Search</strong></td><td>Hybrid vector + BM25 keyword matching</td><td>"wireless noise-cancelling headphones"</td></tr>
+            <tr><td><strong>Visual Search</strong></td><td>Upload image &rarr; AI Vision &rarr; embed &rarr; search</td><td>Upload a photo of a grip trainer &rarr; find similar</td></tr>
+            <tr><td><strong>Personalized</strong></td><td>Weighted preference vector from interaction history</td><td>User bought phone cases &rarr; recommend more accessories</td></tr>
+          </tbody>
+        </table>
+
+        <p>The stack: <strong>FastAPI</strong> backend, <strong>Streamlit</strong> frontend, 6 Azure services, 100 real Amazon products sourced from HuggingFace datasets, all containerized with Docker Compose.</p>
+
+        <h2>Architecture Overview</h2>
+
+<pre><code>ETL PIPELINE                    4 RECOMMENDATION STRATEGIES
+
+1. Feature Extraction            Similar (dual-vector 0.7/0.3)
+   GPT-4o-mini                   Text Search (vector + BM25)
+2. Image Analysis                Visual Search (image &rarr; caption)
+   Azure AI Vision               Personalized (preference vector)
+3. Embedding Generation
+   text-embedding-3-small
+4. Indexing
+   AI Search + Cosmos DB
+
+Azure Services:  AI Search (HNSW)  &middot;  OpenAI (embedding + chat)
+                 AI Vision (captions)  &middot;  Cosmos DB (3 containers)
+                 Blob Storage (images)</code></pre>
+
+        <h2>The Key Design Decision: Text-Unified Multimodal Embeddings</h2>
+
+        <p>This is the architectural decision that makes everything else work. Rather than using separate embedding models for text and images (which would produce incomparable vector spaces), we convert <em>everything</em> to text first, then embed with the same model.</p>
+
+        <p><strong>The text path:</strong></p>
+
+<pre><code>Product description
+  &rarr; GPT-4o-mini enrichment
+  &rarr; "The 245XL Black Ink Compatible cartridges are designed for
+     a wide range of Canon printers..."
+  &rarr; text-embedding-3-small
+  &rarr; text_embedding [1536 floats]</code></pre>
+
+        <p><strong>The image path:</strong></p>
+
+<pre><code>Product image (Amazon CDN URL)
+  &rarr; Azure AI Vision
+  &rarr; caption: "a black ink cartridge with a blue box"
+  &rarr; tags: ["text", "font", "screenshot", "logo"]
+  &rarr; combined: "a black ink cartridge with a blue box. Tags: text, font, screenshot, logo"
+  &rarr; text-embedding-3-small (same model!)
+  &rarr; image_text_embedding [1536 floats]</code></pre>
+
+        <p>Both vectors live in the same 1536-dimensional space. This means we can search across text and image fields simultaneously &mdash; and weight them differently depending on the strategy. For similar products, we use 70% text + 30% image. For visual search, we use 100% image. Same index, different queries.</p>
+
+        <p><strong>The trade-off:</strong> A CLIP-style joint embedding would preserve more visual features. But this approach is simpler, uses only managed Azure services, and produces surprisingly good results. When we uploaded an image of a grip strength trainer, the top result came back at score <strong>0.9999</strong> &mdash; near-perfect match.</p>
+
+        <h2>The Search Index: Dual-Vector HNSW</h2>
+
+        <p>Azure AI Search stores both vector fields in a single index with 13 fields total:</p>
+
+<pre><code class="language-python">fields = [
+    SimpleField(name="id", type=String, key=True, filterable=True),
+    SearchableField(name="name", type=String, analyzer_name="en.microsoft"),
+    SearchableField(name="description", type=String, analyzer_name="en.microsoft"),
+    SearchableField(name="enriched_description", type=String, analyzer_name="en.microsoft"),
+    SimpleField(name="category", type=String, filterable=True, facetable=True),
+    SimpleField(name="price", type=Double, filterable=True, sortable=True),
+    SearchField(
+        name="text_embedding",
+        type=Collection(Single),
+        searchable=True, hidden=False,
+        vector_search_dimensions=1536,
+        vector_search_profile_name="default-vector-profile",
+    ),
+    SearchField(
+        name="image_text_embedding",
+        type=Collection(Single),
+        searchable=True, hidden=False,
+        vector_search_dimensions=1536,
+        vector_search_profile_name="default-vector-profile",
+    ),
+]</code></pre>
+
+        <p>The <code>hidden=False</code> on the vector fields is critical &mdash; without it, you can't retrieve the vectors back from the index, which you need for the similar-products strategy.</p>
+
+        <p><strong>Live index stats:</strong> 100 documents, 4.0 MB total storage, 3.6 MB vector index (90% of storage is vectors), HNSW algorithm with cosine distance.</p>
+
+        <hr>
+
+        <h2>The ETL Pipeline: 4 Steps, 8 Minutes</h2>
+
+        <p>The pipeline runs as a FastAPI background task. The caller gets back a <code>run_id</code> immediately and can poll for status. Each step updates its progress in Cosmos DB.</p>
+
+        <h3>Step 1: Feature Extraction (GPT-4o-mini)</h3>
+
+        <p>Raw Amazon product descriptions are messy. GPT-4o-mini cleans them up:</p>
+
+<pre><code class="language-python">EXTRACTION_PROMPT = """\
+You are a product feature extraction assistant. Given a product name, description,
+and category, extract structured features.
+
+Return a JSON object with these exact keys:
+- "tags": list of 5-8 relevant tags
+- "key_features": list of 3-5 key product features
+- "enriched_description": a 2-3 sentence enriched description optimized for semantic search
+"""</code></pre>
+
+        <p>The enriched description is what gets embedded &mdash; it's what semantic search actually sees. The raw Amazon description with its spec lists and model numbers would produce a much worse embedding.</p>
+
+        <h3>Step 2: Image Analysis (Azure AI Vision)</h3>
+
+<pre><code class="language-python">result = client.analyze_from_url(
+    image_url=image_url,
+    visual_features=[VisualFeatures.CAPTION, VisualFeatures.TAGS],
+)
+caption = result.caption.text
+tags = [tag.name for tag in result.tags.list if tag.confidence > 0.5]
+image_text = f"{caption}. Tags: {', '.join(tags)}"</code></pre>
+
+        <p>For products without valid images, the pipeline synthesizes image text from the product name, category, and tags &mdash; so every product gets both vector fields populated.</p>
+
+        <h3>Step 3: Embedding Generation (text-embedding-3-small)</h3>
+
+        <p>Both the enriched description and the image text are embedded in batches of 50. 100 products = 4 API calls (2 for text, 2 for image-text). This is the fastest step at ~30 seconds.</p>
+
+        <h3>Step 4: Indexing (AI Search + Cosmos DB)</h3>
+
+        <p>Products are split across two stores: <strong>Azure AI Search</strong> (full documents with vectors for similarity search) and <strong>Cosmos DB</strong> (metadata without vectors for CRUD, stats, interaction tracking).</p>
+
+        <h3>Pipeline Timing Breakdown</h3>
+
+        <table>
+          <thead>
+            <tr><th>Step</th><th>Time</th><th>% of Total</th><th>Bottleneck</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Feature Extraction</td><td>~4.5 min</td><td>54%</td><td>100 sequential GPT-4o-mini calls</td></tr>
+            <tr><td>Image Analysis</td><td>~2.5 min</td><td>30%</td><td>100 sequential Vision API calls</td></tr>
+            <tr><td>Embedding</td><td>~30s</td><td>6%</td><td>4 batched embedding calls</td></tr>
+            <tr><td>Indexing</td><td>~50s</td><td>10%</td><td>1 batch search upsert + 100 Cosmos writes</td></tr>
+            <tr><td><strong>Total</strong></td><td><strong>8m 19s</strong></td><td><strong>100%</strong></td><td></td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>Real Data: HuggingFace Amazon Products</h2>
+
+        <p>Rather than synthetic data, we built a download script that pulls real Amazon products from HuggingFace datasets across 5 categories: Electronics, Clothing, Home &amp; Kitchen, Sports, and Books. Quality filters ensure usable data: minimum title/description lengths, valid prices, no spammy listings. The final catalog has 100 products (20 per category) with real Amazon CDN image URLs.</p>
+
+        <p>In <a href="part2-recommendation-strategies.html">Part 2</a>, we'll dive into the 4 recommendation strategies &mdash; how dual-vector search, hybrid text matching, visual search, and personalized collaborative filtering actually work with real queries and real results.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-recommendation-strategies.html">Part 2: Recommendation Strategies &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

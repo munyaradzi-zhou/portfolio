@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Four Recommendation Strategies (Part 2) &mdash; Semantic Product Recommendation Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Four Recommendation Strategies &mdash; Dual-Vector, Hybrid, Visual, and Personalized</h1>
+        <p class="meta">Semantic Product Recommendation Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series. In <a href="part1-architecture-and-etl.html">Part 1</a>, we built the ETL pipeline. Now let's put 100 indexed products to work with 4 recommendation strategies. <a href="part3-frontend-deployment-lessons.html">Part 3</a> covers the frontend, deployment, and lessons learned.</em></p>
+
+        <hr>
+
+        <h2>Strategy 1: Similar Products (Dual-Vector Search)</h2>
+
+        <p><strong>Use case:</strong> User is viewing a product and wants to see related items.</p>
+
+        <p>Retrieve the source product's text and image embeddings from the index, then search both vector fields simultaneously with different weights:</p>
+
+<pre><code class="language-python">def get_similar_products(product_id: str, top_k: int = 8) -> list[dict]:
+    # 1. Look up source product's vectors
+    doc = search_index.get_document_by_id(product_id)
+    text_vec = doc["text_embedding"]         # 1536 floats
+    image_vec = doc["image_text_embedding"]  # 1536 floats
+
+    # 2. Dual-vector search with weighted scoring
+    results = search_index.search_by_dual_vector(
+        text_vector=text_vec,
+        image_vector=image_vec,
+        top_k=top_k + 1,
+        exclude_ids=[product_id],
+    )
+    return results[:top_k]</code></pre>
+
+        <p>Under the hood, Azure AI Search receives two <code>VectorizedQuery</code> objects:</p>
+
+<pre><code class="language-python">text_vq = VectorizedQuery(
+    vector=text_vec,
+    k_nearest_neighbors=top_k,
+    fields="text_embedding",
+    weight=0.7,                  # Text similarity matters more
+)
+image_vq = VectorizedQuery(
+    vector=image_vec,
+    k_nearest_neighbors=top_k,
+    fields="image_text_embedding",
+    weight=0.3,                  # Image similarity is supplementary
+)</code></pre>
+
+        <p>The 0.7/0.3 weighting is intentional. Product descriptions contain richer semantic information (features, use cases, specifications) than image captions ("a black ink cartridge with a blue box"). But the image signal catches cross-category visual similarities that text misses.</p>
+
+        <h3>Live Results</h3>
+
+        <p><strong>Request:</strong> Find 5 products similar to <code>prod_0001</code> (Canon 245XL Black Ink Cartridge)</p>
+
+        <p>The top result was a Canon camera guide (Books) &mdash; the dual-vector search found the Canon brand affinity through both the text embedding ("Canon" in the description) and the image embedding (both products have Canon-branded packaging).</p>
+
+        <hr>
+
+        <h2>Strategy 2: Text Search (Hybrid Vector + BM25)</h2>
+
+        <p><strong>Use case:</strong> User types a natural language query like "wireless noise-cancelling headphones."</p>
+
+        <p>The query is both embedded (for semantic search) and passed as raw text (for BM25 keyword matching). Azure AI Search fuses both scores via <strong>Reciprocal Rank Fusion (RRF)</strong>.</p>
+
+<pre><code class="language-python">def search_by_text(query: str, top_k: int = 10, category: str | None = None):
+    query_vector = embedder.embed_single(query)
+
+    return search_index.search_by_text_vector(
+        query_vector=query_vector,  # Semantic similarity
+        top_k=top_k,
+        category=category,          # Optional filter
+        search_text=query,           # BM25 keyword matching
+    )</code></pre>
+
+        <h3>Why Hybrid Instead of Pure Vector?</h3>
+
+        <p>Vector search captures semantic meaning &mdash; "wireless headphones" matches "Bluetooth audio device" even with zero keyword overlap. But it can miss exact matches that BM25 nails &mdash; "Canon 245XL" should rank a document containing "Canon 245XL" very highly, even if the vector distance isn't the smallest.</p>
+
+        <p>Hybrid gives you both:</p>
+        <ul>
+          <li><strong>Vector search</strong> handles "running shoes for flat feet" &rarr; matches "supportive athletic footwear for overpronation"</li>
+          <li><strong>BM25</strong> handles "Canon 245XL" &rarr; matches the exact product model</li>
+        </ul>
+
+        <hr>
+
+        <h2>Strategy 3: Visual Search (Image Upload)</h2>
+
+        <p><strong>Use case:</strong> User uploads a photo of a product they want to find.</p>
+
+        <p>The uploaded image goes through Azure AI Vision for captioning, the caption is embedded, and the resulting vector is searched against the <code>image_text_embedding</code> field.</p>
+
+<pre><code class="language-python">def search_by_image(image_data: bytes, top_k: int = 8) -> list[dict]:
+    # 1. AI Vision analyzes the uploaded image
+    analysis = image_analyzer.analyze_image_from_bytes(image_data)
+    image_text = analysis["image_text"]
+
+    # 2. Embed the image description
+    image_vector = embedder.embed_single(image_text)
+
+    # 3. Search the image_text_embedding field
+    return search_index.search_by_image_vector(
+        image_vector=image_vector,
+        top_k=top_k,
+    )</code></pre>
+
+        <h3>The Visual Search Pipeline</h3>
+
+<pre><code>User uploads image
+        |
+        v
+Azure AI Vision (analyze_image_from_bytes)
+        |
+        +-- caption: "a grip strength trainer with resistance bands"
+        +-- tags: ["exercise", "fitness", "equipment", "hand"]
+        |
+        v
+Combined: "a grip strength trainer with resistance bands.
+          Tags: exercise, fitness, equipment, hand"
+        |
+        v
+text-embedding-3-small &rarr; [1536 floats]
+        |
+        v
+Azure AI Search &rarr; search image_text_embedding field (HNSW cosine)
+        |
+        v
+Top-K visually similar products</code></pre>
+
+        <h3>Live Results</h3>
+
+        <p>We uploaded the product image for a GripBuddy Strength Trainer:</p>
+
+        <table>
+          <thead>
+            <tr><th>Rank</th><th>Product</th><th>Category</th><th>Score</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>2 PCS GripBuddy Strength Trainer</td><td>Sports</td><td><strong>0.9999</strong></td></tr>
+            <tr><td>2</td><td>UOROMI Grip Strength Trainer</td><td>Sports</td><td>0.7113</td></tr>
+            <tr><td>3</td><td>Chaps Men's Classic Dress Crew Socks</td><td>Clothing</td><td>0.6483</td></tr>
+          </tbody>
+        </table>
+
+        <p>The score of <strong>0.9999</strong> on the exact product is near-perfect. The second result is another grip strength trainer &mdash; semantically correct visual match.</p>
+
+        <hr>
+
+        <h2>Strategy 4: Personalized Recommendations</h2>
+
+        <p><strong>Use case:</strong> Returning user with interaction history wants personalized product suggestions.</p>
+
+        <p>Instead of a traditional user-item matrix, we compute a <strong>weighted preference vector</strong> directly from the user's interacted products' embeddings, then search for similar products, excluding items they've already seen.</p>
+
+        <h3>Interaction Weights</h3>
+
+<pre><code class="language-python">INTERACTION_WEIGHTS = {
+    "view": 1.0,       # Passive interest
+    "click": 2.0,      # Active interest
+    "add_to_cart": 3.0, # Purchase intent
+    "purchase": 5.0,    # Strongest signal
+}</code></pre>
+
+        <h3>The Algorithm</h3>
+
+<pre><code class="language-python">def get_personalized_recommendations(user_id: str, top_k: int = 10):
+    # 1. Fetch interaction history from Cosmos DB
+    interactions = cosmos_db.get_user_interactions(user_id, limit=50)
+    if not interactions:
+        return _get_popular_products(top_k)  # Cold-start fallback
+
+    # 2. Collect product embeddings with weights
+    product_vectors = []
+    seen_product_ids = set()
+    for interaction in interactions:
+        pid = interaction["product_id"]
+        seen_product_ids.add(pid)
+        weight = INTERACTION_WEIGHTS[interaction["interaction_type"]]
+        doc = search_index.get_document_by_id(pid)
+        if doc and doc.get("text_embedding"):
+            product_vectors.append((doc["text_embedding"], weight))
+
+    # 3. Compute weighted average preference vector
+    total_weight = sum(w for _, w in product_vectors)
+    preference_vector = [0.0] * 1536
+    for vec, weight in product_vectors:
+        for i in range(1536):
+            preference_vector[i] += vec[i] * weight
+    preference_vector = [v / total_weight for v in preference_vector]
+
+    # 4. Search, excluding already-seen products
+    results = search_index.search_by_text_vector(
+        query_vector=preference_vector,
+        top_k=top_k + len(seen_product_ids),
+    )
+    return [r for r in results if r["id"] not in seen_product_ids][:top_k]</code></pre>
+
+        <h3>Live Results</h3>
+
+        <p><strong>User <code>user_001</code>'s history:</strong> viewed a battery kit (1.0), clicked a wireless charger (2.0), added ink cartridge to cart (3.0), purchased an Airpod case (5.0).</p>
+
+        <p>The purchase (weight 5.0) of the Airpod case dominates the preference vector, pulling it toward "phone accessories" in the embedding space.</p>
+
+        <table>
+          <thead>
+            <tr><th>Rank</th><th>Product</th><th>Category</th><th>Score</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>Lovmooful iPhone 13 Pro Max Case</td><td>Electronics</td><td>0.6709</td></tr>
+            <tr><td>2</td><td>Moto G Stylus 5G 2023 Case</td><td>Electronics</td><td>0.6531</td></tr>
+            <tr><td>3</td><td>AIYZE Pixel 7 Pro Case Leather Wallet</td><td>Electronics</td><td>0.6489</td></tr>
+            <tr><td>4</td><td>BENTOBEN Samsung Galaxy S23 Case</td><td>Electronics</td><td>0.6408</td></tr>
+            <tr><td>5</td><td>Kids Case for Fire HD 8 Tablet</td><td>Electronics</td><td>0.6372</td></tr>
+          </tbody>
+        </table>
+
+        <p>Every single result is a phone/tablet case. The system correctly identified "phone accessories" as the user's preference from just 4 interactions. All 4 previously interacted products are excluded from results.</p>
+
+        <hr>
+
+        <h2>How Azure AI Search Handles Dual-Vector Queries</h2>
+
+        <p>When we send two <code>VectorizedQuery</code> objects with different weights:</p>
+
+        <ol>
+          <li>AI Search runs HNSW search on <code>text_embedding</code> &rarr; top-K candidates with text scores</li>
+          <li>AI Search runs HNSW search on <code>image_text_embedding</code> &rarr; top-K candidates with image scores</li>
+          <li>Scores are combined: <code>final_score = 0.7 &times; text_score + 0.3 &times; image_score</code></li>
+          <li>Results are re-sorted by final score</li>
+        </ol>
+
+        <p>This happens server-side in a single API call &mdash; we don't need to make two separate search requests and fuse them ourselves.</p>
+
+        <h2>The 4 Search Functions</h2>
+
+        <table>
+          <thead>
+            <tr><th>Strategy</th><th>Function</th><th>Vector Fields</th><th>Additional</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Similar Products</td><td><code>search_by_dual_vector()</code></td><td>text (0.7) + image (0.3)</td><td>Post-filter excludes</td></tr>
+            <tr><td>Text Search</td><td><code>search_by_text_vector()</code></td><td>text_embedding</td><td>+ BM25 search_text</td></tr>
+            <tr><td>Visual Search</td><td><code>search_by_image_vector()</code></td><td>image_text_embedding only</td><td>&mdash;</td></tr>
+            <tr><td>Personalized</td><td><code>search_by_text_vector()</code></td><td>text_embedding</td><td>Preference vector as query</td></tr>
+          </tbody>
+        </table>
+
+        <p>Personalized recommendations reuse the text vector search function &mdash; the "query vector" is just the user's computed preference vector instead of an embedded text string. The search index doesn't know the difference.</p>
+
+        <p>In <a href="part3-frontend-deployment-lessons.html">Part 3</a>, we'll cover the Streamlit frontend with its 6 tabs and glassmorphism design, Docker Compose deployment, the Cosmos DB data model, and lessons learned.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-architecture-and-etl.html">&larr; Part 1: Architecture &amp; ETL</a>
+        <a href="part3-frontend-deployment-lessons.html">Part 3: Frontend &amp; Deployment &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

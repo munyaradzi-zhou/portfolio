@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Architectural Decisions and Lessons Learned (Part 3) — RAG Intelligence Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Architectural Decisions: Why These Tools, What Tradeoffs, and What I'd Change</h1>
+        <p class="meta">RAG Document Intelligence Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series. In <a href="part1-ingestion-pipeline.html">Part 1</a> we built the ingestion pipeline. In <a href="part2-query-pipeline.html">Part 2</a> we built the query pipeline. Both posts showed you what the system does. This post is about why &mdash; the architectural decisions, the tradeoffs I accepted, and what I'd change for production scale.</em></p>
+
+        <p>Every RAG system is a stack of choices. Most of those choices don't have a single right answer &mdash; they have a right answer <em>for your constraints</em>. Understanding why I made these choices matters more than the choices themselves.</p>
+
+        <hr>
+
+        <h2>Decision 1: Qdrant Over Azure AI Search</h2>
+
+        <p><strong>The choice:</strong> Self-hosted Qdrant in Docker instead of Azure AI Search.</p>
+
+        <p><strong>Why:</strong></p>
+        <ul>
+          <li><strong>Cost:</strong> Qdrant is free. Azure AI Search's free tier is limited to 50 MB and 3 indexes. The Basic tier jumps to $75/month &mdash; for a portfolio project, that's significant.</li>
+          <li><strong>Control:</strong> Qdrant runs locally with zero network latency. I can inspect the collection, see point counts, tune HNSW parameters, all from the REST API.</li>
+          <li><strong>Learning value:</strong> Building the embedding + upsert pipeline from scratch teaches you what managed services abstract away. When I later use Azure AI Search's integrated vectorization, I'll understand what it's doing under the hood.</li>
+        </ul>
+
+        <p><strong>The tradeoff:</strong> I lose Azure AI Search's built-in features:</p>
+        <ul>
+          <li>Integrated vectorization (automatic chunking + embedding via skillsets)</li>
+          <li>Semantic ranker (Microsoft's trained reranker model)</li>
+          <li>Built-in hybrid search (keyword + vector in a single query)</li>
+          <li>Index management, scheduling, and monitoring</li>
+        </ul>
+
+        <p>I had to build hybrid search and reranking myself. That's more code but deeper understanding.</p>
+
+        <p><strong>When I'd choose differently:</strong> In an enterprise setting where the team needs managed infrastructure, automatic reindexing, and SLA guarantees, Azure AI Search is the clear winner. For learning and portfolio work, building from primitives is more valuable.</p>
+
+        <hr>
+
+        <h2>Decision 2: Sentence-Window Chunking Over Fixed-Size</h2>
+
+        <p><strong>The choice:</strong> LlamaIndex <code>SentenceWindowNodeParser</code> with <code>window_size=3</code> instead of <code>RecursiveCharacterTextSplitter(chunk_size=500)</code>.</p>
+
+        <p><strong>Why it matters:</strong> This is the highest-leverage decision in the entire system. Get chunking wrong and nothing downstream can compensate &mdash; not hybrid search, not reranking, not even GPT-4o.</p>
+
+<pre><code>Fixed-size (500 chars):
+"...submitted within 30 days of the expense being incurred. Receipts are"
+&uarr; chunk boundary splits mid-thought
+
+Sentence-window:
+Core: "Receipts are required for all expenses over $25."
+Window: "Expense reports must be submitted within 30 days of the expense
+         being incurred. Receipts are required for all expenses over $25.
+         Reimbursements are processed within 10 business days of approval."</code></pre>
+
+        <p>Sentence-window chunking gives you:</p>
+        <ol>
+          <li><strong>Clean retrieval boundaries</strong> &mdash; each chunk is a complete thought</li>
+          <li><strong>Rich embedding context</strong> &mdash; the window (7 sentences) captures the semantic neighborhood</li>
+          <li><strong>Focused LLM context</strong> &mdash; the core text doesn't waste tokens on tangential information</li>
+        </ol>
+
+        <p><strong>The tradeoff:</strong> More chunks per document (15 from a 59-line document vs. ~4 with 500-char chunks). More vectors mean slightly higher storage and search costs. For a small document corpus, this is irrelevant. At millions of documents, it's a real consideration.</p>
+
+        <p><strong>The numbers that validated this choice:</strong> During testing, all 5 questions returned correct answers with sentence-window chunking. The chunks retrieved were precisely the sentences containing the answer &mdash; not a 500-character block that happened to include the answer somewhere in the middle.</p>
+
+        <hr>
+
+        <h2>Decision 3: Hybrid Retrieval (70/30 Dense/BM25)</h2>
+
+        <p><strong>The choice:</strong> Combine Qdrant cosine search (dense) with BM25 keyword scoring (sparse), weighted 70/30.</p>
+
+        <p><strong>Why not pure dense?</strong> Because embeddings are bad at numbers, acronyms, and exact terms. Ask "What's the minimum internet speed for remote work?" and the embedding for "internet speed" might be close to chunks about "technology requirements" but miss the one containing "50 Mbps."</p>
+
+        <p><strong>Why not pure BM25?</strong> Because BM25 can't handle paraphrasing. "PTO policy" won't match "paid time off accrual rates" despite being the same concept.</p>
+
+        <p><strong>Why 70/30?</strong> I experimented with several weightings on the test questions:</p>
+
+        <table>
+          <thead>
+            <tr><th>Dense:BM25</th><th>Result</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>100:0</td><td>Failed on "50 Mbps" and "$5,000 VP approval" &mdash; exact terms lost</td></tr>
+            <tr><td>70:30</td><td>All 5 questions correct &mdash; semantic-first with keyword backup</td></tr>
+            <tr><td>50:50</td><td>4/5 &mdash; keyword noise pushed one irrelevant chunk into top 5</td></tr>
+            <tr><td>30:70</td><td>3/5 &mdash; paraphrased questions couldn't find semantic matches</td></tr>
+          </tbody>
+        </table>
+
+        <p>70/30 was the sweet spot: dense similarity drives the ranking, BM25 acts as a tiebreaker and catch-all for exact terms.</p>
+
+        <p><strong>Important implementation detail:</strong> BM25 runs <em>on the already-retrieved dense candidates</em>, not on the full corpus. This is a two-stage approach: dense recall (broad net, 20 candidates) &rarr; BM25 re-scoring (keyword precision). Running BM25 on the full corpus would require a separate keyword index, which is what Azure AI Search provides natively.</p>
+
+        <hr>
+
+        <h2>Decision 4: Cross-Encoder Reranking</h2>
+
+        <p><strong>The choice:</strong> <code>cross-encoder/ms-marco-MiniLM-L-6-v2</code> reranking 20 candidates down to 5.</p>
+
+        <p><strong>Why not skip reranking?</strong> Because bi-encoder retrieval (even hybrid) is fundamentally limited. It encodes query and passage independently, then compares embeddings. A cross-encoder processes both together, catching relevance signals that independent encoding misses.</p>
+
+        <p>Real example from testing: for the question "What's the performance improvement plan duration?", the hybrid search placed the correct chunk ("PIP lasting 60 days") at position 4. The cross-encoder promoted it to position 1 with a rerank score of 8.7, while position 1 from hybrid search ("performance reviews are conducted twice per year") dropped to position 3.</p>
+
+        <p><strong>Why this specific model?</strong> <code>ms-marco-MiniLM-L-6-v2</code> is:</p>
+        <ul>
+          <li>Small (22M parameters) &mdash; runs on CPU in Docker without GPU</li>
+          <li>Fast (1.7s for 20 pairs on CPU)</li>
+          <li>Trained on MS MARCO (a massive relevance dataset) &mdash; excellent for passage ranking</li>
+          <li>Max length 512 tokens &mdash; matches our sentence-window chunk sizes</li>
+        </ul>
+
+        <p><strong>The tradeoff that hurt:</strong> The 11.1-second cold start. When the model loads for the first time, the user waits 11 seconds before the reranking even begins. Solutions:</p>
+
+        <ol>
+          <li><strong>Preload at startup</strong> &mdash; Call <code>_get_model()</code> in the API's lifespan handler. First user gets instant reranking.</li>
+          <li><strong>Warm-up request</strong> &mdash; Send a dummy query during deployment health checks.</li>
+          <li><strong>Skip reranking for simple queries</strong> &mdash; If the top hybrid result has a much higher score than #2, reranking won't change the order. Skip it and save 1.7s.</li>
+        </ol>
+
+        <p>I chose lazy loading for simplicity, but production systems should always preload.</p>
+
+        <hr>
+
+        <h2>Decision 5: gpt-5-mini as the Generator</h2>
+
+        <p><strong>The choice:</strong> Azure OpenAI <code>gpt-5-mini</code> (a reasoning model) instead of <code>gpt-4o-mini</code> (a standard chat model).</p>
+
+        <p><strong>Why a reasoning model for RAG?</strong> Honestly, this was partly circumstantial &mdash; gpt-5-mini was what was available on the Azure resource I had access to. But reasoning models do have an advantage for RAG: they "think" before answering, which means they're more likely to correctly synthesize information from multiple chunks rather than latching onto the first relevant-looking sentence.</p>
+
+        <p><strong>The pain this caused:</strong></p>
+
+        <table>
+          <thead>
+            <tr><th>Problem</th><th>Root Cause</th><th>Hours to Debug</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>Unsupported parameter: 'max_tokens'</code></td><td>Reasoning models use <code>max_completion_tokens</code></td><td>1</td></tr>
+            <tr><td>Empty responses</td><td>64 reasoning tokens consumed entire budget of 50</td><td>2</td></tr>
+            <tr><td><code>Unsupported parameter: 'temperature'</code></td><td>Reasoning models don't support temperature</td><td>0.5</td></tr>
+            <tr><td>Requires API version 2025-01-01-preview</td><td>Older API versions reject reasoning models</td><td>0.5</td></tr>
+          </tbody>
+        </table>
+
+        <p><strong>What I'd choose differently:</strong> For straightforward RAG Q&amp;A where the answer is directly in the retrieved context, <code>gpt-4o-mini</code> would be faster (~2s vs ~8.7s), cheaper (10&ndash;20x), and more predictable. Reasoning models shine when the answer requires multi-step inference across chunks &mdash; for this simple handbook, it's overkill.</p>
+
+        <p><strong>The lesson:</strong> Match your model to your task complexity. Reasoning models aren't always better; they're better when reasoning is needed.</p>
+
+        <hr>
+
+        <h2>Decision 6: Dual Azure OpenAI Resources</h2>
+
+        <p><strong>The choice:</strong> Two separate Azure OpenAI endpoints &mdash; one for embeddings, one for chat.</p>
+
+<pre><code>Embedding Resource: my-openai-resource-one.openai.azure.com
+  &larr; text-embedding-3-large (3072-dim)
+
+Chat Resource: mzhou-mlscced3-eastus2.cognitiveservices.azure.com
+  &larr; gpt-5-mini (reasoning model)</code></pre>
+
+        <p><strong>Why two resources?</strong> Not by design &mdash; by necessity. Azure OpenAI model availability varies by region. <code>text-embedding-3-large</code> was available on one resource; <code>gpt-5-mini</code> was only available on a different resource in a different region.</p>
+
+        <p><strong>How the code handles it:</strong></p>
+
+<pre><code class="language-python"># config.py
+class Settings(BaseSettings):
+    # Shared / embedding resource
+    azure_openai_api_key: str
+    azure_openai_endpoint: str
+
+    # Chat resource (falls back to shared values if empty)
+    azure_openai_chat_endpoint: str = ""
+    azure_openai_chat_api_key: str = ""</code></pre>
+
+<pre><code class="language-python"># generator.py
+def _get_llm(streaming=False):
+    settings = get_settings()
+    # Use chat-specific endpoint if set, otherwise fall back to shared
+    endpoint = settings.azure_openai_chat_endpoint or settings.azure_openai_endpoint
+    api_key = settings.azure_openai_chat_api_key or settings.azure_openai_api_key</code></pre>
+
+        <p>The fallback pattern means the system works with one resource or two. If both models end up on the same resource, just leave the chat-specific fields empty.</p>
+
+        <p><strong>Architectural insight:</strong> This pattern &mdash; separate endpoints with fallback &mdash; is actually a good practice for production systems. It enables independent scaling of embedding and generation workloads, different rate limits per model type, regional failover, and cost isolation in billing.</p>
+
+        <hr>
+
+        <h2>Decision 7: Docker Compose with CPU-Only PyTorch</h2>
+
+        <p><strong>The choice:</strong> Three-service Docker Compose (Qdrant, API, Frontend) with CPU-only PyTorch in the API container.</p>
+
+        <p><strong>The problem it solved:</strong> Default PyTorch pulls ~4GB of CUDA libraries. The cross-encoder reranker runs fine on CPU for 20 candidates. We don't need GPU support.</p>
+
+<pre><code class="language-dockerfile"># Install CPU-only PyTorch FIRST (189MB instead of ~4GB CUDA)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir -r requirements.txt</code></pre>
+
+        <p><strong>Order matters.</strong> PyTorch must be installed <em>before</em> <code>requirements.txt</code> because sentence-transformers (in requirements.txt) depends on PyTorch. If you install requirements first, pip will pull the CUDA version of PyTorch as a dependency.</p>
+
+        <p><strong>The Qdrant health check story:</strong> The obvious health check (<code>curl http://localhost:6333/healthz</code>) fails because <code>curl</code> isn't installed in the Qdrant Docker image. The fix uses a bash TCP check:</p>
+
+<pre><code class="language-yaml">healthcheck:
+  test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/6333'"]</code></pre>
+
+        <p><strong>CORS at module level:</strong> FastAPI's CORS middleware must be added before the app starts. I initially added it in the <code>lifespan</code> handler, which caused <code>RuntimeError: Cannot add middleware after an application has started</code>. These are the kinds of issues that don't appear in tutorials but consume hours in real deployments.</p>
+
+        <hr>
+
+        <h2>Decision 8: LangFuse Cloud Over Self-Hosted</h2>
+
+        <p><strong>The choice:</strong> LangFuse Cloud (managed) instead of self-hosted LangFuse in Docker Compose.</p>
+
+        <p><strong>What happened:</strong> I originally included self-hosted LangFuse in docker-compose.yml. LangFuse v3 crashed on startup with <code>CLICKHOUSE_URL is not configured</code> &mdash; version 3 introduced a mandatory ClickHouse dependency. Adding ClickHouse would mean yet another container, more memory, more complexity.</p>
+
+        <p>Since I already had LangFuse Cloud credentials (free tier), I removed the self-hosted services and pointed the client at <code>cloud.langfuse.com</code>. Less infrastructure, same observability.</p>
+
+        <p><strong>The lesson:</strong> For development and portfolio work, managed services for <em>non-core</em> components (observability, logging, monitoring) let you focus on the core pipeline. Self-host the things that differentiate your system (Qdrant for custom vector operations); use managed services for everything else.</p>
+
+        <hr>
+
+        <h2>What I'd Change for Production</h2>
+
+        <h3>1. Preload the Reranker at Startup</h3>
+
+        <p>The 11-second cold start is unacceptable in production. Add model loading to the API startup:</p>
+
+<pre><code class="language-python">@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from api.services.reranker import _get_model
+    _get_model()  # Preload CrossEncoder
+    yield</code></pre>
+
+        <h3>2. Implement Response Caching</h3>
+
+        <p>Identical questions should return cached answers. A simple LRU cache keyed on <code>hash(question)</code> would eliminate repeat LLM calls. For near-duplicate questions ("remote work policy" vs "what's the remote work policy"), you'd need semantic caching &mdash; embed the question, check if any cached question embedding is within cosine distance 0.95.</p>
+
+        <h3>3. Switch to a Non-Reasoning Model</h3>
+
+        <p>For straightforward document Q&amp;A, replace gpt-5-mini with gpt-4o-mini: ~2s latency vs ~8.7s, 10&ndash;20x cheaper, and temperature control is available for reducing variance. Reserve reasoning models for complex multi-hop questions that require synthesizing across many chunks.</p>
+
+        <h3>4. Use text-embedding-3-small</h3>
+
+        <p>3072 dimensions is overkill for most use cases. <code>text-embedding-3-small</code> (1536 dimensions) is 6.5x cheaper per token, faster to embed, half the storage, and faster Qdrant search. Quality difference is measurable but often immaterial for retrieval tasks.</p>
+
+        <h3>5. Add Guardrails</h3>
+
+        <p>The current system trusts all input and all output. Production needs:</p>
+        <ul>
+          <li><strong>Input validation:</strong> Reject questions longer than 500 tokens, detect prompt injection</li>
+          <li><strong>Output validation:</strong> Check that citations actually match retrieved chunks</li>
+          <li><strong>Rate limiting:</strong> Per-user query limits to prevent abuse</li>
+          <li><strong>Content safety:</strong> Azure AI Content Safety for both input and output</li>
+        </ul>
+
+        <h3>6. Persist Chat History</h3>
+
+        <p>Currently, conversation history lives in Streamlit's <code>st.session_state</code> &mdash; it disappears on page refresh. Production needs server-side persistence (Cosmos DB, PostgreSQL) with session management.</p>
+
+        <hr>
+
+        <h2>The Full Stack Revisited</h2>
+
+        <p>Looking at the complete system, here's what each component costs in terms of complexity, latency, and value:</p>
+
+        <table>
+          <thead>
+            <tr><th>Component</th><th>Complexity</th><th>Latency</th><th>Value</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Parser</td><td>Low</td><td>0.1ms</td><td>Foundation &mdash; everything breaks without clean text extraction</td></tr>
+            <tr><td>Sentence-Window Chunker</td><td>Medium</td><td>8ms</td><td>Highest leverage &mdash; determines retrieval quality ceiling</td></tr>
+            <tr><td>Embedder</td><td>Low</td><td>387ms</td><td>Essential &mdash; converts text to searchable vectors</td></tr>
+            <tr><td>Hybrid Retriever</td><td>Medium</td><td>312ms</td><td>High &mdash; combines semantic + keyword for robust recall</td></tr>
+            <tr><td>Cross-Encoder Reranker</td><td>Medium</td><td>1,730ms</td><td>Medium-High &mdash; promotes the truly relevant results</td></tr>
+            <tr><td>LLM Generator</td><td>Low (config)</td><td>8,751ms</td><td>Essential &mdash; synthesizes the final cited answer</td></tr>
+            <tr><td>LangFuse Tracing</td><td>Low</td><td>5ms</td><td>Medium &mdash; debugging and evaluation over time</td></tr>
+          </tbody>
+        </table>
+
+        <p>The system works because each stage compensates for the limitations of the previous one:</p>
+
+        <ul>
+          <li><strong>Parsing</strong> gets raw text (but can't find relevant parts)</li>
+          <li><strong>Chunking</strong> creates focused pieces (but can't rank them)</li>
+          <li><strong>Dense search</strong> finds semantically similar chunks (but misses keywords)</li>
+          <li><strong>BM25</strong> catches keyword matches (but can't understand meaning)</li>
+          <li><strong>Cross-encoder</strong> precisely ranks relevance (but can't generate answers)</li>
+          <li><strong>LLM</strong> synthesizes cited answers (but can only work with what it's given)</li>
+        </ul>
+
+        <p>Remove any stage and the whole pipeline degrades. That's the architecture of a RAG system &mdash; not a single clever algorithm, but a pipeline where each stage makes the next one's job easier.</p>
+
+        <hr>
+
+        <h2>Closing Thoughts</h2>
+
+        <p>Building this system taught me that RAG is less about any single technology and more about understanding the failure modes at each stage:</p>
+
+        <ul>
+          <li><strong>Parsing failures</strong> are silent &mdash; you get text, but it's garbled or missing tables</li>
+          <li><strong>Chunking failures</strong> are invisible &mdash; the chunks look fine until retrieval misses</li>
+          <li><strong>Retrieval failures</strong> are the most common &mdash; the right chunk exists but isn't in the top 5</li>
+          <li><strong>Generation failures</strong> are the most visible &mdash; the user sees a wrong or uncited answer</li>
+        </ul>
+
+        <p>Each architectural decision in this system was made to minimize one of these failure modes. Sentence-window chunking prevents chunking failures. Hybrid retrieval prevents keyword-blind retrieval failures. Cross-encoder reranking prevents ranking failures. Strict system prompts prevent generation failures.</p>
+
+        <p>No RAG system is perfect. But a well-architected one fails gracefully, fails visibly, and gives you the observability to understand why it failed and fix it.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-query-pipeline.html">&larr; Part 2: The Query Pipeline</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

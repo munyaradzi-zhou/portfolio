@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Frontend, Deployment &amp; Lessons Learned (Part 3) &mdash; Semantic Product Recommendation Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Frontend, Deployment &amp; Lessons Learned</h1>
+        <p class="meta">Semantic Product Recommendation Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series. In <a href="part1-architecture-and-etl.html">Part 1</a>, we built the ETL pipeline. In <a href="part2-recommendation-strategies.html">Part 2</a>, we implemented 4 recommendation strategies. Now let's ship it.</em></p>
+
+        <hr>
+
+        <h2>The Frontend: 6 Tabs of Streamlit</h2>
+
+        <p>The Streamlit dashboard (~1,000 lines) organizes everything into 6 tabs, each mapping to specific API endpoints:</p>
+
+<pre><code>Tab 1: Product Catalog      &rarr; GET /products/
+Tab 2: Recommendations      &rarr; POST /recommend/similar
+Tab 3: Text Search          &rarr; POST /recommend/search
+Tab 4: Visual Search        &rarr; POST /recommend/image
+Tab 5: ETL Pipeline         &rarr; POST /products/ingest + GET /pipeline/status/{run_id}
+Tab 6: Analytics            &rarr; GET /products/stats + POST /recommend/personalized</code></pre>
+
+        <h3>Glassmorphism Design System</h3>
+
+        <p>Every product card uses a consistent glassmorphism style with category-specific accent colors:</p>
+
+        <table>
+          <thead>
+            <tr><th>Category</th><th>Accent Color</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Electronics</td><td>Cyan (#00d4ff)</td></tr>
+            <tr><td>Clothing</td><td>Purple (#e879f9)</td></tr>
+            <tr><td>Home &amp; Kitchen</td><td>Green (#4ade80)</td></tr>
+            <tr><td>Books</td><td>Amber (#fbbf24)</td></tr>
+            <tr><td>Sports</td><td>Blue (#38bdf8)</td></tr>
+          </tbody>
+        </table>
+
+<pre><code class="language-css">.glass {
+    background: rgba(30, 41, 59, 0.5);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(148, 163, 184, 0.1);
+    border-radius: 14px;
+}
+
+.product-card {
+    border-left: 4px solid;  /* color set per category */
+}</code></pre>
+
+        <h3>Pipeline Progress Visualization</h3>
+
+        <p>The ETL Pipeline tab includes an animated progress bar that updates as each pipeline step completes. The <code>seg-active</code> class has a CSS pulse animation that provides visual feedback during long-running steps.</p>
+
+        <h3>Interaction Tracking</h3>
+
+        <p>The Recommendations, Text Search, and Visual Search tabs include "View" buttons on each result card. Clicking one records an interaction that feeds into Strategy 4 (personalized recommendations). The Analytics tab shows the user's interaction history.</p>
+
+        <h3>Sidebar: Health Check + Pipeline Flow</h3>
+
+        <p>The sidebar includes a live API health indicator &mdash; the health dot pulses green when the API is reachable, red when it's not &mdash; giving immediate visual feedback before the user tries anything.</p>
+
+        <hr>
+
+        <h2>Deployment: Docker Compose</h2>
+
+        <p>The system deploys as 2 services (no self-hosted databases &mdash; all data services are Azure-managed):</p>
+
+<pre><code class="language-yaml">services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8006:8006"
+    env_file: .env
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8006/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8508:8508"
+    environment:
+      - API_BASE=http://api:8006
+    depends_on:
+      api:
+        condition: service_healthy</code></pre>
+
+        <p>The <code>depends_on: condition: service_healthy</code> ensures the frontend doesn't start until the API's health check passes. The API's lifespan handler creates the AI Search index and Cosmos DB containers on startup.</p>
+
+        <h3>Startup Sequence</h3>
+
+<pre><code>1. API container starts
+2. Lifespan handler runs:
+   a. ensure_index()    &rarr; Creates/updates AI Search index (13 fields, HNSW)
+   b. ensure_cosmos_db() &rarr; Creates database + 3 containers if they don't exist
+3. Health check passes (/health returns {"status": "ok"})
+4. Frontend container starts
+5. Frontend connects to http://api:8006</code></pre>
+
+        <hr>
+
+        <h2>The Data Model: Cosmos DB</h2>
+
+        <p>Three containers, all with <code>/id</code> partition key:</p>
+
+        <ul>
+          <li><strong>products</strong> (100 documents) &mdash; Metadata without vectors. Vectors are only in AI Search. This separation keeps Cosmos DB costs down.</li>
+          <li><strong>interactions</strong> &mdash; User interaction events (view, click, add_to_cart, purchase) with timestamps</li>
+          <li><strong>pipeline-runs</strong> &mdash; ETL status tracking with step-by-step progress</li>
+        </ul>
+
+        <h3>Why /id Partition Key?</h3>
+
+        <p>Using a mutable field like <code>/category</code> as partition key creates problems when documents change category during processing. <code>/id</code> ensures each document has a stable, unique partition. The trade-off is that cross-partition queries require <code>enable_cross_partition_query=True</code>, but at 100 documents, this is negligible.</p>
+
+        <hr>
+
+        <h2>Lessons Learned</h2>
+
+        <p><strong>1. Vector Fields Must Be <code>hidden=False</code>.</strong> When you create a <code>SearchField</code> with <code>searchable=True</code> and <code>vector_search_dimensions</code>, the default is <code>hidden=True</code>. This means the vector is stored and searchable but <em>cannot be retrieved</em> via <code>get_document()</code>. This broke our similar-products strategy, which needs to look up a product's vectors before searching for neighbors.</p>
+
+        <p><strong>2. You Can't Add <code>filterable</code> to an Existing Key Field.</strong> Azure AI Search doesn't let you modify the <code>filterable</code> property of an existing key field. We created <code>id</code> without <code>filterable=True</code>, then discovered we needed it for the exclude-ID filter. The workaround: fetch <code>top_k + 1</code> results and filter in Python. For fresh deployments, <code>ensure_index()</code> now creates <code>id</code> with <code>filterable=True</code>.</p>
+
+        <p><strong>3. Real Amazon Data Needs Aggressive Filtering.</strong> The HuggingFace Amazon datasets contain noise: "Sold Out" titles, spec-table descriptions, Unicode brackets in tags, string prices. Our download script applies quality filters for minimum lengths, valid prices, and spam keywords.</p>
+
+        <p><strong>4. Singleton Clients Save Connection Overhead.</strong> Every Azure service client uses the same singleton pattern &mdash; a global <code>_client</code> variable initialized on first call. This appears in all 7 service files.</p>
+
+        <p><strong>5. Batching Embedding Calls Matters.</strong> Step 3 processes 200 texts in 4 API calls (batch size 50). Without batching, this would be 200 separate calls. The difference: ~30 seconds vs ~5+ minutes.</p>
+
+        <p><strong>6. CORS Must Be Configured at Module Level.</strong> Adding CORS middleware inside FastAPI's <code>lifespan</code> handler causes <code>RuntimeError: Cannot add middleware after an application has started</code>. Configure CORS at module level using <code>os.environ.get()</code>.</p>
+
+        <hr>
+
+        <h2>Performance Summary</h2>
+
+        <h3>Pipeline (One-Time Ingestion)</h3>
+
+        <table>
+          <thead>
+            <tr><th>Step</th><th>Duration</th><th>API Calls</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Feature Extraction</td><td>~4.5 min</td><td>100 sequential</td></tr>
+            <tr><td>Image Analysis</td><td>~2.5 min</td><td>100 sequential</td></tr>
+            <tr><td>Embedding</td><td>~30s</td><td>4 batched</td></tr>
+            <tr><td>Indexing</td><td>~50s</td><td>1 batch + 100 seq</td></tr>
+            <tr><td><strong>Total</strong></td><td><strong>8m 19s</strong></td><td><strong>~205</strong></td></tr>
+          </tbody>
+        </table>
+
+        <h3>Recommendation Queries (Per-Request)</h3>
+
+        <table>
+          <thead>
+            <tr><th>Strategy</th><th>Latency</th><th>API Calls</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Similar Products</td><td>~200ms</td><td>1 (AI Search dual-vector)</td></tr>
+            <tr><td>Text Search</td><td>~500ms</td><td>1 embedding + 1 AI Search hybrid</td></tr>
+            <tr><td>Visual Search</td><td>~2s</td><td>1 AI Vision + 1 embedding + 1 AI Search</td></tr>
+            <tr><td>Personalized</td><td>~300ms</td><td>1 Cosmos + N AI Search lookups + 1 query</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>The Complete Tech Stack</h2>
+
+        <table>
+          <thead>
+            <tr><th>Layer</th><th>Technology</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Backend</strong></td><td>FastAPI + Uvicorn</td><td>API (14 endpoints, 4 routers)</td></tr>
+            <tr><td><strong>Frontend</strong></td><td>Streamlit</td><td>6-tab dashboard with glassmorphism</td></tr>
+            <tr><td><strong>Vector Search</strong></td><td>Azure AI Search</td><td>Dual-vector HNSW index (1536-dim)</td></tr>
+            <tr><td><strong>Embeddings</strong></td><td>Azure OpenAI (text-embedding-3-small)</td><td>1536-dim text embeddings</td></tr>
+            <tr><td><strong>Feature Extraction</strong></td><td>Azure OpenAI (GPT-4o-mini)</td><td>Structured tag/feature extraction</td></tr>
+            <tr><td><strong>Image Analysis</strong></td><td>Azure AI Vision</td><td>Image captions + tags</td></tr>
+            <tr><td><strong>Metadata Store</strong></td><td>Azure Cosmos DB</td><td>3 containers (products, interactions, pipeline-runs)</td></tr>
+            <tr><td><strong>Image Store</strong></td><td>Azure Blob Storage</td><td>UUID-prefixed product images</td></tr>
+            <tr><td><strong>Config</strong></td><td>Pydantic BaseSettings</td><td>Type-safe .env loading with @lru_cache</td></tr>
+            <tr><td><strong>Deployment</strong></td><td>Docker Compose</td><td>2 services (api + frontend)</td></tr>
+            <tr><td><strong>Data Source</strong></td><td>HuggingFace Datasets</td><td>100 real Amazon products (5 categories)</td></tr>
+          </tbody>
+        </table>
+
+        <p>The system takes uploaded product catalogs, enriches them with AI-extracted features and image captions, generates dual-vector embeddings, and serves 4 recommendation strategies &mdash; all through managed Azure services. Similar products in ~200ms, visual search in ~2s, personalized recommendations from just a handful of interactions. 6 Azure services, 2 Docker containers, 100 real products, 4 recommendation strategies.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-recommendation-strategies.html">&larr; Part 2: Recommendation Strategies</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

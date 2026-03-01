@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building a Football Agentic RAG System: Multi-Agent Architecture and Temporal Knowledge Graphs (Part 1) — Football Analytics Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building a Football Agentic RAG System: Multi-Agent Architecture and Temporal Knowledge Graphs (Part 1)</h1>
+        <p class="meta">Football Analytics Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series on building a Football Agentic RAG System that combines temporal knowledge graphs, multi-agent orchestration, and retrieval-augmented generation for football analytics. <a href="part2-hybrid-retrieval.html">Part 2</a> covers hybrid retrieval and provenance tracking. <a href="part3-multi-turn-conversation.html">Part 3</a> covers multi-turn conversation and context tracking.</em></p>
+
+        <hr>
+
+        <h2>Introduction</h2>
+
+        <p>Imagine asking a football analytics system: "How many goals did Harry Kane score in the last 5 seasons?" This seemingly simple question requires complex reasoning across multiple dimensions:</p>
+
+        <ul>
+          <li><strong>Temporal normalization</strong>: What does "last 5 seasons" mean? Which years? (2019-2020, 2020-2021, 2021-2022, 2022-2023, 2023-2024)</li>
+          <li><strong>Entity recognition</strong>: Who is "Harry Kane"? What is his player ID in the database?</li>
+          <li><strong>Query routing</strong>: Should this query go to the knowledge graph, SQL database, or vector store?</li>
+          <li><strong>Data aggregation</strong>: Sum goals across all competitions, all clubs, all matches in those seasons.</li>
+          <li><strong>Answer synthesis</strong>: Format the result into a natural language response with context.</li>
+        </ul>
+
+        <p>Traditional RAG systems struggle with this multi-step reasoning. Vector similarity search alone cannot reliably traverse temporal relationships, aggregate statistics, or maintain factual precision across 32 seasons of football data. What we need is a <strong>multi-agent system</strong> where specialized agents handle different aspects of the reasoning pipeline, coordinated by an orchestrator that understands the structure of football knowledge.</p>
+
+        <p>This project builds exactly that: a Football Agentic RAG System powered by temporal knowledge graphs in Neo4j, hybrid retrieval across graph, SQL, and vector stores, and a multi-agent architecture inspired by OpenAI's Temporal Agents pattern. The system can answer complex football questions spanning decades of data, provide explanations grounded in match reports, track multi-turn conversations, and prevent hallucinations through rigorous provenance tracking.</p>
+
+        <hr>
+
+        <h2>Why Multi-Agent Architecture for Football Analytics?</h2>
+
+        <p>Football data is inherently multi-modal and requires different reasoning strategies depending on the question type:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Question Type</th>
+              <th>Example</th>
+              <th>Best Data Source</th>
+              <th>Reasoning Required</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Statistical</strong></td>
+              <td>"How many goals did Messi score?"</td>
+              <td>SQL (aggregation)</td>
+              <td>Sum, count, average</td>
+            </tr>
+            <tr>
+              <td><strong>Relational</strong></td>
+              <td>"When did Barcelona beat Real Madrid?"</td>
+              <td>Neo4j (graph traversal)</td>
+              <td>Pattern matching, relationships</td>
+            </tr>
+            <tr>
+              <td><strong>Explanatory</strong></td>
+              <td>"Why did the World Cup final go to extra time?"</td>
+              <td>Vector store (RAG over match reports)</td>
+              <td>Semantic search, summarization</td>
+            </tr>
+            <tr>
+              <td><strong>Temporal</strong></td>
+              <td>"Show stats for the last 5 seasons"</td>
+              <td>All sources + temporal filter</td>
+              <td>Date range normalization</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>A monolithic RAG pipeline cannot efficiently handle all four question types. Statistical questions need aggregation. Relational questions need graph traversal. Explanatory questions need vector similarity. Temporal questions need date range normalization across all sources.</p>
+
+        <p>The solution is to decompose the system into <strong>specialized agents</strong>, each responsible for a specific aspect of football reasoning:</p>
+
+        <ol>
+          <li><strong>Orchestrator Agent</strong>: Coordinates the workflow, manages context, enriches queries</li>
+          <li><strong>Temporal Normalizer Agent</strong>: Parses temporal expressions ("last season", "2023/24", "previous 5 seasons") into structured filters</li>
+          <li><strong>Query Router Agent</strong>: Determines which data source(s) to query based on question intent</li>
+          <li><strong>Knowledge Graph Query Agent</strong>: Generates and executes Cypher queries against Neo4j</li>
+          <li><strong>Stats Aggregation Agent</strong>: Generates and executes SQL queries against PostgreSQL</li>
+          <li><strong>Explanation RAG Agent</strong>: Performs semantic search over match reports and articles</li>
+          <li><strong>Visualization Agent</strong>: Generates chart specifications for data visualization</li>
+        </ol>
+
+        <p>Each agent operates independently but communicates through the orchestrator, which maintains conversation state, tracks provenance, and synthesizes the final response.</p>
+
+        <hr>
+
+        <h2>Temporal Knowledge Graph Design</h2>
+
+        <p>The core of the system is a <strong>temporal knowledge graph</strong> built in Neo4j that models 32 seasons of football data (1992-2024). The schema captures the rich relational structure of football: teams play matches, players score goals, competitions have seasons, managers lead clubs.</p>
+
+        <h3>Schema Overview</h3>
+
+        <p>The Neo4j schema contains the following node types:</p>
+
+        <pre><code class="language-cypher">// Core Entity Nodes
+(:Team {name, country, founded, stadium})
+(:Player {name, nationality, position, birth_date})
+(:Match {date, season, home_score, away_score, competition})
+(:Competition {name, type, country})
+(:Season {year, start_date, end_date})
+(:Manager {name, nationality})
+(:Stadium {name, city, capacity})
+
+// Event Nodes (for granular match events)
+(:Goal {minute, type, player_id, match_id})
+(:Card {minute, type, player_id, match_id})
+(:Substitution {minute, player_in, player_out, match_id})</code></pre>
+
+        <p>And the following relationship types:</p>
+
+        <pre><code class="language-cypher">// Match Relationships
+(Team)-[:PLAYED_HOME]->(Match)
+(Team)-[:PLAYED_AWAY]->(Match)
+(Team)-[:WON]->(Match)
+(Team)-[:LOST]->(Match)
+(Team)-[:DREW]->(Match)
+
+// Player Relationships
+(Player)-[:SCORED]->(Goal)
+(Player)-[:ASSISTED]->(Goal)
+(Player)-[:RECEIVED]->(Card)
+(Player)-[:PLAYED_FOR {season, from_date, to_date}]->(Team)
+
+// Competition Relationships
+(Match)-[:PART_OF]->(Competition)
+(Competition)-[:HAS_SEASON]->(Season)
+
+// Manager Relationships
+(Manager)-[:MANAGED {from_date, to_date}]->(Team)</code></pre>
+
+        <h3>Design Rationale</h3>
+
+        <p><strong>Temporal properties on relationships.</strong> The <code>PLAYED_FOR</code> and <code>MANAGED</code> relationships include temporal properties (<code>season</code>, <code>from_date</code>, <code>to_date</code>). This allows us to query "Which teams did Ronaldo play for in 2008?" by filtering on the relationship's temporal properties, not just the nodes. This is critical for handling transfers, loan periods, and managerial changes.</p>
+
+        <p><strong>Explicit match results as relationships.</strong> Rather than computing match results on the fly, we materialize <code>WON</code>, <code>LOST</code>, and <code>DREW</code> relationships during ingestion. This makes queries like "Show all matches where Barcelona won" trivial graph traversals rather than score comparisons.</p>
+
+        <p><strong>Event nodes for granularity.</strong> Goals, cards, and substitutions are modeled as separate nodes rather than properties of the match. This enables queries like "Show all goals scored in the 90th minute or later" and "Which players have scored against their former clubs?" without complex property filtering.</p>
+
+        <p><strong>Bidirectional match relationships.</strong> Each match has both <code>PLAYED_HOME</code> and <code>PLAYED_AWAY</code> relationships. This supports symmetric queries: "Show all home matches for Arsenal" and "Show all away matches against Liverpool" are equally efficient.</p>
+
+        <h3>Example: Multi-Hop Query</h3>
+
+        <p>Consider the question: "Which players scored when Barcelona beat Real Madrid in El Clasico during the 2022-2023 season?"</p>
+
+        <p>This requires a 4-hop graph traversal:</p>
+
+        <pre><code class="language-cypher">MATCH (barcelona:Team {name: "FC Barcelona"})-[:WON]->(match:Match)
+      <-[:PLAYED_AWAY]-(real_madrid:Team {name: "Real Madrid"}),
+      (match)-[:PART_OF]->(competition:Competition {name: "La Liga"}),
+      (player:Player)-[:SCORED]->(goal:Goal)-[:SCORED_IN]->(match)
+WHERE match.season = "2022-2023"
+RETURN player.name, goal.minute
+ORDER BY goal.minute</code></pre>
+
+        <p>This query traverses relationships from team to match, match to competition, match to goal, and goal to player, filtering on temporal properties (season) and match result (Barcelona won). A vector-only RAG system would struggle to reliably extract this chain of connections from text chunks.</p>
+
+        <hr>
+
+        <h2>Multi-Agent Orchestration</h2>
+
+        <p>The <strong>OrchestratorAgent</strong> is the central coordinator that manages the entire query processing pipeline. It receives the user's question, enriches it with conversation context, delegates to specialized agents, and synthesizes the final response.</p>
+
+        <h3>Orchestrator Workflow</h3>
+
+        <p>Here is the core <code>process_query</code> method from <code>orchestrator_agent.py</code>:</p>
+
+        <pre><code class="language-python">class OrchestratorAgent:
+    def __init__(self):
+        self.temporal_agent = TemporalNormalizerAgent()
+        self.router_agent = QueryRouterAgent()
+        self.kg_agent = KGQueryAgent()
+        self.stats_agent = StatsAggregationAgent()
+        self.rag_agent = ExplanationRAGAgent()
+        self.viz_agent = VisualizationAgent()
+
+    async def process_query(
+        self,
+        query: str,
+        session_id: str = None,
+        trace_id: str = None,
+        message_history: list = None,
+        context_entities: dict = None
+    ) -> Dict[str, Any]:
+        """
+        Main entry point for processing user queries.
+        """
+        logger.info(f"Orchestrator received query: {query}")
+
+        # Track provenance
+        if trace_id:
+            provenance_service.add_step(trace_id, "orchestrator_started", {
+                "query": query,
+                "has_history": bool(message_history),
+                "context_entities": context_entities or {}
+            })
+
+        # 1. Enrich query with context for follow-up questions
+        enriched_query = self._enrich_with_context(
+            query, message_history, context_entities
+        )
+
+        # 2. Normalize temporal expressions
+        temporal_filters = self.temporal_agent.normalize(enriched_query)
+        context = {
+            "filters": temporal_filters,
+            "session_id": session_id,
+            "trace_id": trace_id,
+            "message_history": message_history,
+            "context_entities": context_entities
+        }
+
+        # 3. Route query to determine primary data source
+        route_plan = self.router_agent.route(enriched_query)
+        primary_source = route_plan.get("primary")
+
+        # 4. Execute appropriate sub-agent
+        result = {}
+        if primary_source == "neo4j":
+            result = self.kg_agent.process_query(enriched_query, context)
+        elif primary_source == "sql":
+            result = self.stats_agent.process_query(enriched_query, context)
+        elif primary_source == "vector_store":
+            result = self.rag_agent.process_query(enriched_query, context)
+
+        # 5. Generate visualization if data is available
+        viz_spec = None
+        if result.get("data"):
+            viz_spec = self.viz_agent.generate_chart_spec(
+                result["data"], enriched_query
+            )
+
+        # 6. Construct final response
+        return {
+            "answer": result.get("answer"),
+            "sources": result.get("sources", []),
+            "visualization": viz_spec,
+            "data": result.get("data"),
+            "debug_info": {
+                "route": route_plan,
+                "temporal_filters": temporal_filters
+            }
+        }</code></pre>
+
+        <p>The workflow follows a clear six-step pipeline:</p>
+
+        <ol>
+          <li><strong>Context enrichment</strong>: Add entities from conversation history to handle follow-up questions</li>
+          <li><strong>Temporal normalization</strong>: Parse "last 5 seasons" into ["2019-2020", "2020-2021", ...]</li>
+          <li><strong>Query routing</strong>: Determine which data source is best suited for this question</li>
+          <li><strong>Agent execution</strong>: Delegate to the appropriate specialized agent</li>
+          <li><strong>Visualization generation</strong>: Create chart specifications if data is available</li>
+          <li><strong>Response synthesis</strong>: Combine answer, sources, visualization, and debug info</li>
+        </ol>
+
+        <h3>Query Enrichment for Multi-Turn Conversations</h3>
+
+        <p>The <code>_enrich_with_context</code> method handles follow-up questions by adding previously mentioned entities to the query. This enables natural conversations like:</p>
+
+        <pre><code class="language-plaintext">User: "What are Manchester United's stats this season?"
+Assistant: "Manchester United finished 8th in the Premier League 2023-24..."
+
+[Context: teams=["manchester united"]]
+
+User: "Who is their top scorer?"
+[Enriched: "Manchester United - Who is their top scorer?"]
+Assistant: "Bruno Fernandes was their top scorer with 15 goals..."</code></pre>
+
+        <p>Here is the enrichment logic:</p>
+
+        <pre><code class="language-python">def _enrich_with_context(
+    self, query: str, message_history: list = None,
+    context_entities: dict = None
+) -> str:
+    """
+    Enrich follow-up questions with context from conversation history.
+    """
+    if not context_entities:
+        return query
+
+    query_lower = query.lower()
+    enriched = query
+
+    # Check for pronouns or implicit references
+    needs_enrichment = any(word in query_lower for word in [
+        "they", "them", "their", "he", "him", "his",
+        "that team", "the team", "last season"
+    ])
+
+    if not needs_enrichment:
+        return query
+
+    # Add team context if available
+    teams = context_entities.get("teams", [])
+    if teams and not any(team in query_lower for team in teams):
+        last_team = teams[-1]
+        if any(ref in query_lower for ref in ["the team", "they", "them"]):
+            enriched = f"{last_team.title()} - {enriched}"
+
+    # Add player context if available
+    players = context_entities.get("players", [])
+    if players and not any(player in query_lower for player in players):
+        last_player = players[-1]
+        if any(ref in query_lower for ref in ["he", "him", "his"]):
+            enriched = f"{last_player.title()} - {enriched}"
+
+    logger.info(f"Context enrichment: '{query}' → '{enriched}'")
+    return enriched</code></pre>
+
+        <p>The enrichment checks for pronouns and implicit references, then prepends the most recently mentioned team, player, or competition to disambiguate the query. This simple heuristic dramatically improves multi-turn conversation quality.</p>
+
+        <hr>
+
+        <h2>Agent Specialization</h2>
+
+        <p>Each specialized agent implements a specific reasoning pattern optimized for its data source.</p>
+
+        <h3>Temporal Normalizer Agent</h3>
+
+        <p>The <strong>TemporalNormalizerAgent</strong> parses natural language temporal expressions into structured filters that other agents can use. It supports both LLM-based parsing and rule-based fallback.</p>
+
+        <pre><code class="language-python">class TemporalNormalizerAgent:
+    def normalize(self, query: str) -> Dict[str, Any]:
+        """
+        Parse temporal expressions from the query.
+        Returns structured filters like {'season': '2023-2024'}.
+        """
+        # Try LLM-based normalization first
+        if self.llm_service:
+            try:
+                filters = self._normalize_with_llm(query)
+                if filters:
+                    return filters
+            except Exception as e:
+                logger.debug(f"LLM failed, falling back to rules: {e}")
+
+        # Fallback to rule-based normalization
+        return self._normalize_with_rules(query)
+
+    def _normalize_with_rules(self, query: str) -> Dict[str, Any]:
+        """Rule-based temporal normalization."""
+        filters = {}
+        query_lower = query.lower()
+
+        # Season pattern: "2023/24", "2023-24", "2023-2024"
+        season_pattern = r"(\d{4})[/-](\d{2,4})"
+        match = re.search(season_pattern, query)
+        if match:
+            year1 = match.group(1)
+            year2 = match.group(2)
+            if len(year2) == 2:
+                year2 = "20" + year2
+            filters["season"] = f"{year1}-{year2}"
+
+        # "Last season" logic
+        if "last season" in query_lower:
+            filters["season"] = "2023-2024"
+
+        # "Previous 5 seasons"
+        if "last 5 seasons" in query_lower:
+            filters["seasons"] = [
+                "2019-2020", "2020-2021", "2021-2022",
+                "2022-2023", "2023-2024"
+            ]
+
+        return filters</code></pre>
+
+        <p>The agent tries LLM-based parsing first (for complex expressions like "during Mourinho's first season at Chelsea") but falls back to regex patterns for common cases. This hybrid approach ensures robustness.</p>
+
+        <h3>Query Router Agent</h3>
+
+        <p>The <strong>QueryRouterAgent</strong> analyzes the question to determine the optimal data source(s). It classifies questions into intent categories and routes accordingly:</p>
+
+        <pre><code class="language-python">class QueryRouterAgent:
+    def route(self, query: str) -> Dict[str, Any]:
+        """
+        Determine the best data source(s) for this query.
+        Returns: {'primary': 'sql', 'secondary': ['neo4j'], 'intent': 'statistics'}
+        """
+        query_lower = query.lower()
+        plan = {"primary": None, "secondary": [], "intent": "unknown"}
+
+        # 1. Explanatory questions (WHY/HOW) -> Vector Store
+        if "why" in query_lower or "how" in query_lower:
+            plan["primary"] = "vector_store"
+            plan["secondary"] = ["neo4j", "sql"]
+            plan["intent"] = "explanation"
+            return plan
+
+        # 2. Statistical questions (HOW MANY, AVERAGE, TOP) -> SQL
+        if any(x in query_lower for x in [
+            "how many", "average", "total", "most", "top", "stats"
+        ]):
+            plan["primary"] = "sql"
+            plan["secondary"] = ["neo4j"]
+            plan["intent"] = "statistics"
+            return plan
+
+        # 3. Relationship questions (WHO PLAYED, TRANSFER, HISTORY) -> Neo4j
+        if any(x in query_lower for x in [
+            "played for", "transfer", "history", "beat", "won against"
+        ]):
+            plan["primary"] = "neo4j"
+            plan["secondary"] = ["sql"]
+            plan["intent"] = "relationship"
+            return plan
+
+        # Default fallback
+        plan["primary"] = "vector_store"
+        plan["intent"] = "general"
+        return plan</code></pre>
+
+        <p>The routing logic uses keyword matching to classify intent. More sophisticated implementations could use an LLM classifier or learned model, but simple keyword matching achieves high accuracy for football queries.</p>
+
+        <h3>Knowledge Graph Query Agent</h3>
+
+        <p>The <strong>KGQueryAgent</strong> generates and executes Cypher queries against Neo4j. It uses the LLM to translate natural language into Cypher, leveraging few-shot examples from the schema:</p>
+
+        <pre><code class="language-python">class KGQueryAgent:
+    def process_query(
+        self, query: str, context: Dict[str, Any] = None
+    ) -> Dict[str, Any]:
+        """Process a query using the Knowledge Graph."""
+        # Get schema information
+        schemas = self.schema_tool.get_schemas()
+        neo4j_schema = schemas["neo4j_schema"]
+
+        # Generate Cypher query using LLM
+        cypher_query = self.llm_service.generate_cypher(
+            query, neo4j_schema, context
+        )
+
+        # Execute the query
+        results = self.neo4j_tool.execute_query(cypher_query)
+
+        # Format the answer
+        if results:
+            answer = self._format_answer(query, results)
+            return {
+                "answer": answer,
+                "data": results,
+                "sources": [{"type": "neo4j", "query": cypher_query}],
+                "source": "neo4j"
+            }
+        else:
+            return {
+                "answer": "No matches found in the knowledge graph.",
+                "data": [],
+                "sources": [],
+                "source": "neo4j"
+            }</code></pre>
+
+        <p>The agent relies on the LLM service to generate syntactically correct Cypher queries grounded in the schema. It includes the temporal filters from context to ensure queries respect season boundaries.</p>
+
+        <hr>
+
+        <h2>Why This Architecture Works</h2>
+
+        <p>The multi-agent architecture provides several critical advantages over monolithic RAG systems:</p>
+
+        <p><strong>Separation of concerns.</strong> Each agent is responsible for a single aspect of reasoning. The temporal agent does not need to know about Cypher generation. The KG agent does not need to know about SQL. This modularity makes the system easier to maintain, test, and extend.</p>
+
+        <p><strong>Hybrid retrieval.</strong> Different question types require different data sources. Statistical questions benefit from SQL aggregation. Relational questions benefit from graph traversal. Explanatory questions benefit from vector similarity. The router agent ensures each question goes to the optimal source.</p>
+
+        <p><strong>Temporal reasoning built-in.</strong> The temporal normalizer agent handles date range logic uniformly across all data sources. Once "last 5 seasons" is normalized to a season list, every downstream agent can use that filter without reimplementing temporal logic.</p>
+
+        <p><strong>Provenance tracking.</strong> The orchestrator logs every step of the reasoning pipeline (temporal normalization, routing decision, agent execution, source retrieval). This enables debugging, anti-hallucination verification, and explainability.</p>
+
+        <p><strong>Extensibility.</strong> Adding a new agent (e.g., a sentiment analysis agent over fan tweets) requires only implementing the agent interface and registering it with the orchestrator. No changes to existing agents are needed.</p>
+
+        <hr>
+
+        <h2>What's Next</h2>
+
+        <p>In <a href="part2-hybrid-retrieval.html">Part 2</a>, we dive into the hybrid retrieval architecture: how the system combines Neo4j graph traversal, PostgreSQL aggregation, and Chroma vector search into a unified query pipeline. We will examine the provenance tracking system that prevents hallucinations by tracing every answer back to its source, and the Redis caching strategy that reduces API calls by 70%. We will walk through concrete examples showing when to use graph vs SQL vs vector search, and how the system decides between them in real-time.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-hybrid-retrieval.html">Part 2: Hybrid Retrieval &amp; Provenance &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building a Football Agentic RAG System: Multi-Turn Conversation and Context Tracking (Part 3) — Football Analytics Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building a Football Agentic RAG System: Multi-Turn Conversation and Context Tracking (Part 3)</h1>
+        <p class="meta">Football Analytics Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series on building a Football Agentic RAG System. <a href="part1-multi-agent-architecture.html">Part 1</a> covered the multi-agent architecture and temporal knowledge graph design. <a href="part2-hybrid-retrieval.html">Part 2</a> covered hybrid retrieval and provenance tracking. This post covers multi-turn conversation and context tracking.</em></p>
+
+        <hr>
+
+        <h2>Introduction</h2>
+
+        <p>Natural conversations about football rarely consist of isolated questions. A user might ask "What are Manchester United's stats this season?" and then follow up with "Who is their top scorer?" and "What about last season?" Each follow-up question contains pronouns and implicit references that rely on context from previous turns.</p>
+
+        <p>Traditional RAG systems treat each query independently, forcing users to repeat information: "Who is Manchester United's top scorer?" and "What were Manchester United's stats last season?" This is tedious and unnatural. What we need is a <strong>multi-turn conversation system</strong> that tracks context across messages and enriches follow-up questions with missing entities.</p>
+
+        <p>This final post in the series dives into the conversation system: how the <strong>SessionService</strong> tracks message history and context entities, how the <strong>OrchestratorAgent</strong> enriches queries to resolve pronouns and implicit references, and concrete examples of multi-turn conversations about teams, players, and competitions spanning dozens of turns.</p>
+
+        <hr>
+
+        <h2>Multi-Turn Conversation Requirements</h2>
+
+        <p>A robust multi-turn conversation system for football analytics must handle:</p>
+
+        <h3>1. Pronoun Resolution</h3>
+
+        <p>Users naturally use pronouns to refer to previously mentioned entities:</p>
+
+        <ul>
+          <li>"Show me Messi's stats." → "What about <strong>his</strong> World Cup performance?"</li>
+          <li>"How did Manchester United perform?" → "<strong>They</strong> finished 8th in the Premier League."</li>
+          <li>"Who won the Champions League?" → "What were <strong>their</strong> semifinal matches?"</li>
+        </ul>
+
+        <p>The system must resolve "his", "they", and "their" to the correct entities (Messi, Manchester United, Champions League winner).</p>
+
+        <h3>2. Implicit Entity References</h3>
+
+        <p>Users often omit entities that were mentioned in previous turns:</p>
+
+        <ul>
+          <li>"Manchester United's stats" → "Who is <strong>their</strong> top scorer?" (implicit: Manchester United)</li>
+          <li>"Messi's goals" → "What about <strong>last season</strong>?" (implicit: Messi)</li>
+          <li>"Champions League 2023" → "Show me <strong>the final</strong>" (implicit: Champions League 2023)</li>
+        </ul>
+
+        <p>The system must track which team, player, competition, or season was last discussed and inject that context into follow-up queries.</p>
+
+        <h3>3. Context Switching</h3>
+
+        <p>Users may switch topics mid-conversation:</p>
+
+        <ul>
+          <li>"Manchester United's stats" → "Now show me <strong>Barcelona</strong>" → "What about their performance?" (now refers to Barcelona, not Manchester United)</li>
+        </ul>
+
+        <p>The system must update context when new entities are introduced and use the most recent entity for ambiguous references.</p>
+
+        <h3>4. Temporal Context</h3>
+
+        <p>Users often refer to temporal periods discussed earlier:</p>
+
+        <ul>
+          <li>"Stats for 2023-2024" → "What about <strong>the previous season</strong>?" (implicit: relative to 2023-2024)</li>
+        </ul>
+
+        <p>The system must track which seasons, dates, or time ranges were mentioned and resolve relative references accordingly.</p>
+
+        <hr>
+
+        <h2>SessionService: Message History and Context Tracking</h2>
+
+        <p>The <strong>SessionService</strong> is the core component responsible for managing conversation state. It stores message history, extracts context entities from messages, and provides context to the orchestrator for query enrichment.</p>
+
+        <h3>Session Schema</h3>
+
+        <p>Each session is stored in Redis with the following structure:</p>
+
+        <pre><code class="language-json">{
+  "session_id": "football_abc123",
+  "messages": [
+    {
+      "role": "user",
+      "content": "What are Manchester United's stats?",
+      "timestamp": "2024-01-15T10:30:00",
+      "metadata": {}
+    },
+    {
+      "role": "assistant",
+      "content": "Manchester United finished 8th in the Premier League...",
+      "timestamp": "2024-01-15T10:30:05",
+      "metadata": {
+        "confidence": 0.95,
+        "sources_count": 3,
+        "trace_id": "xyz789"
+      }
+    }
+  ],
+  "context_teams": ["manchester united"],
+  "context_players": [],
+  "context_competitions": [],
+  "context_seasons": ["2024"],
+  "created_at": "2024-01-15T10:30:00"
+}</code></pre>
+
+        <p>The session tracks:</p>
+
+        <ul>
+          <li><strong>messages</strong>: Full conversation history (user and assistant messages)</li>
+          <li><strong>context_teams</strong>: List of teams mentioned in the conversation</li>
+          <li><strong>context_players</strong>: List of players mentioned</li>
+          <li><strong>context_competitions</strong>: List of competitions mentioned</li>
+          <li><strong>context_seasons</strong>: List of seasons or years mentioned</li>
+        </ul>
+
+        <p>Each list maintains the order of mentions, with the most recent entity at the end. This enables the system to use the <strong>last mentioned entity</strong> for ambiguous references.</p>
+
+        <h3>Adding Messages to the Session</h3>
+
+        <p>The <code>add_message</code> method stores a message and extracts entities from it:</p>
+
+        <pre><code class="language-python">class SessionService:
+    def add_message(
+        self, session_id: str, role: str, content: str,
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Add a message to the conversation history."""
+        session = self.get_session(session_id) or self._initialize_session()
+
+        message = {
+            "role": role,
+            "content": content,
+            "timestamp": datetime.utcnow().isoformat(),
+            "metadata": metadata or {}
+        }
+
+        session["messages"].append(message)
+
+        # Extract and update context entities from user messages
+        if role == "user":
+            self._update_context_entities(session, content, metadata)
+
+        # Keep only last 20 messages to prevent memory bloat
+        if len(session["messages"]) > 20:
+            session["messages"] = session["messages"][-20:]
+
+        self.create_session(session_id, session)</code></pre>
+
+        <h3>Context Entity Extraction</h3>
+
+        <p>The <code>_update_context_entities</code> method uses pattern matching to detect teams, players, competitions, and seasons:</p>
+
+        <pre><code class="language-python">def _update_context_entities(
+    self, session: Dict[str, Any], message: str,
+    metadata: Optional[Dict[str, Any]]
+) -> None:
+    """Extract and update context entities from user message."""
+    message_lower = message.lower()
+
+    # Common team patterns
+    teams = [
+        "manchester united", "real madrid", "barcelona", "liverpool",
+        "bayern munich", "chelsea", "arsenal", "manchester city"
+    ]
+    for team in teams:
+        if team in message_lower and team not in session.get("context_teams", []):
+            session.setdefault("context_teams", []).append(team)
+
+    # Common player patterns
+    players = ["messi", "ronaldo", "neymar", "mbappe", "haaland"]
+    for player in players:
+        if player in message_lower and player not in session.get("context_players", []):
+            session.setdefault("context_players", []).append(player)
+
+    # Keep only last 5 of each entity type
+    for key in ["context_teams", "context_players", "context_competitions", "context_seasons"]:
+        if key in session and len(session[key]) > 5:
+            session[key] = session[key][-5:]</code></pre>
+
+        <hr>
+
+        <h2>Query Enrichment for Follow-Up Questions</h2>
+
+        <p>The <strong>OrchestratorAgent</strong> enriches queries using the <code>_enrich_with_context</code> method:</p>
+
+        <pre><code class="language-python">def _enrich_with_context(
+    self, query: str, message_history: list = None,
+    context_entities: dict = None
+) -> str:
+    """Enrich follow-up questions with context from conversation history."""
+    if not context_entities:
+        return query
+
+    query_lower = query.lower()
+    enriched = query
+
+    # Check for pronouns or implicit references
+    needs_enrichment = any(word in query_lower for word in [
+        "they", "them", "their", "he", "him", "his",
+        "that team", "the team", "last season"
+    ])
+
+    if not needs_enrichment:
+        return query
+
+    # Add team context if available
+    teams = context_entities.get("teams", [])
+    if teams and any(ref in query_lower for ref in ["the team", "they", "them"]):
+        enriched = f"{teams[-1].title()} - {enriched}"
+
+    # Add player context if available
+    players = context_entities.get("players", [])
+    if players and any(ref in query_lower for ref in ["he", "him", "his"]):
+        enriched = f"{players[-1].title()} - {enriched}"
+
+    return enriched</code></pre>
+
+        <hr>
+
+        <h2>Multi-Turn Conversation Examples</h2>
+
+        <h3>Scenario 1: Team Performance Tracking</h3>
+
+        <pre><code class="language-plaintext">Turn 1
+User: What are Manchester United's stats this season?
+[Extract: teams=["manchester united"], seasons=["2024"]]
+Assistant: Manchester United finished 8th in the Premier League 2023-24...
+
+Turn 2
+User: Who is their top scorer?
+[Context: teams=["manchester united"]]
+[Enriched: "Manchester United - Who is their top scorer?"]
+Assistant: Bruno Fernandes was their top scorer with 15 goals...
+
+Turn 3
+User: What about last season?
+[Context: teams=["manchester united"]]
+[Enriched: "Manchester United - What about last season?"]
+Assistant: Last season (2022-23), Marcus Rashford led with 30 goals...</code></pre>
+
+        <p>The system tracks "manchester united" in context and automatically enriches "their" and "last season" to refer to Manchester United.</p>
+
+        <h3>Scenario 2: Player Statistics</h3>
+
+        <pre><code class="language-plaintext">Turn 1
+User: Show me Lionel Messi's career goals
+[Extract: players=["messi"]]
+Assistant: Messi has scored 806+ career goals...
+
+Turn 2
+User: What about his World Cup performance?
+[Context: players=["messi"]]
+[Enriched: "Messi - What about his World Cup performance?"]
+Assistant: Messi scored 7 goals in the 2022 World Cup...
+
+Turn 3
+User: Compare him to Cristiano Ronaldo
+[Extract: players=["messi", "ronaldo"]]
+Assistant: Messi: 806 goals, Ronaldo: 850+ goals...</code></pre>
+
+        <p>The pronoun "his" is resolved to "messi" from context. When Ronaldo is mentioned, both players are tracked.</p>
+
+        <h3>Scenario 3: Context Switching</h3>
+
+        <pre><code class="language-plaintext">Turn 1
+User: What are Manchester United's stats?
+[Extract: teams=["manchester united"]]
+Assistant: Manchester United stats...
+
+Turn 2
+User: Now show me Barcelona
+[Extract: teams=["manchester united", "barcelona"]]
+Assistant: Barcelona stats...
+
+Turn 3
+User: What about their performance?
+[Context: teams=["manchester united", "barcelona"]]
+[Most recent: "barcelona"]
+[Enriched: "Barcelona - What about their performance?"]
+Assistant: Barcelona finished 2nd in La Liga...</code></pre>
+
+        <p>When Barcelona is introduced, it becomes the most recent team. The query "their performance" now refers to Barcelona, not Manchester United.</p>
+
+        <hr>
+
+        <h2>Implementation Benefits</h2>
+
+        <p>The multi-turn conversation system provides several key benefits:</p>
+
+        <p><strong>Natural interaction.</strong> Users can ask follow-up questions using pronouns and implicit references, just like talking to a human analyst. No need to repeat entity names in every query.</p>
+
+        <p><strong>Context persistence.</strong> The session tracks up to 20 messages and 5 entities per type. This covers most conversation lengths while preventing unbounded memory growth.</p>
+
+        <p><strong>Explicit enrichment logging.</strong> Every query enrichment is logged, making it easy to debug when context resolution fails. The logs show "Context enrichment: 'Who is their top scorer?' → 'Manchester United - Who is their top scorer?'"</p>
+
+        <p><strong>Graceful fallback.</strong> If no context entities are available, queries pass through unchanged. The system does not hallucinate entities that were never mentioned.</p>
+
+        <hr>
+
+        <h2>Future Enhancements</h2>
+
+        <p>Several improvements could further enhance the conversation system:</p>
+
+        <p><strong>NER-based entity extraction.</strong> Replace substring matching with spaCy or similar NER models to detect entities not in the curated lists. This would handle player nicknames, team abbreviations, and less common entities.</p>
+
+        <p><strong>Coreference resolution.</strong> Use a coreference resolution model to properly resolve "he", "they", and "it" to specific entities based on linguistic context, not just recency.</p>
+
+        <p><strong>Intent classification for context switching.</strong> Detect when the user explicitly wants to switch context ("Now show me Barcelona") vs continue the current topic ("What about them?").</p>
+
+        <p><strong>Conversation summarization.</strong> After 20+ turns, summarize the conversation history to maintain context without exceeding token limits when passing history to the LLM.</p>
+
+        <hr>
+
+        <h2>Conclusion</h2>
+
+        <p>The Football Agentic RAG System demonstrates how multi-agent architecture, temporal knowledge graphs, hybrid retrieval, provenance tracking, and multi-turn conversation can be combined to create a powerful football analytics platform. The system handles complex temporal reasoning ("last 5 seasons"), multi-hop graph traversal ("players who scored against their former clubs"), explanatory questions grounded in match reports, and natural follow-up questions across dozens of conversation turns.</p>
+
+        <p>The three-part architecture (specialized agents, hybrid retrieval, conversation tracking) provides modularity, extensibility, and factual accuracy. Each component can be improved independently: swap the entity extraction method, add a new agent, or upgrade the knowledge graph schema without rewriting the entire system.</p>
+
+        <p>This architecture is directly applicable to other domains requiring temporal reasoning and multi-modal retrieval: financial analytics ("What was Apple's revenue growth in Q4 2023?" → "How does that compare to last year?"), scientific literature review ("Show me papers on graph neural networks from 2023" → "What about their applications in drug discovery?"), or legal document analysis ("Find cases citing Brown v. Board of Education" → "What were the main arguments?").</p>
+
+        <p>The key insight is that complex reasoning tasks benefit from decomposition into specialized agents, each optimized for a specific retrieval or reasoning pattern, coordinated by an orchestrator that maintains conversation state and ensures factual grounding through provenance tracking.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-hybrid-retrieval.html">&larr; Part 2: Hybrid Retrieval &amp; Provenance</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

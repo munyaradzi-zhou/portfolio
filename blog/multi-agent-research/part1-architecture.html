@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why I Built a Multi-Agent Research System (Part 1) — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Why I Built a Multi-Agent Research System (And Why Single Agents Fail)</h1>
+        <p class="meta">Multi-Agent Research Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series on building a production multi-agent research system with LangGraph, OpenAI GPT-4o, Qdrant, and Tavily Search. <a href="part2-building-agents.html">Part 2</a> covers building the agents. <a href="part3-deployment-results.html">Part 3</a> covers deployment and live results.</em></p>
+
+        <hr>
+
+        <h2>The Problem with Single-Agent Research</h2>
+
+        <p>Ask GPT-4o to "research the challenges of deploying LLMs in production and write a professional report." You'll get something reasonable &mdash; maybe 400 words of general observations, no citations, no data points, and no way to know if the claims are accurate.</p>
+
+        <p>That's the single-agent problem. One prompt has to handle research, analysis, writing, AND quality control simultaneously. It's like asking one person to be the reporter, data analyst, editor, and fact-checker all at once. The result is mediocre at everything.</p>
+
+<pre><code>Single Agent (Traditional):
+
+  Question &rarr; One LLM prompt &rarr; Answer
+
+  Problems:
+  - No real web search (uses training data only)
+  - No structured data extraction
+  - No citation verification
+  - No quality feedback loop
+  - No revision mechanism</code></pre>
+
+        <p>I wanted something fundamentally different: a system where specialized agents collaborate in a pipeline, each focused on one task, with a built-in quality gate that can send work back for revision.</p>
+
+        <hr>
+
+        <h2>The Multi-Agent Architecture</h2>
+
+        <p>The system uses four specialized agents orchestrated by LangGraph's StateGraph:</p>
+
+<pre><code>User Query
+    |
+    v
++-------------+
+|  Researcher  |  &larr; Tavily Search (3 parallel queries, 23+ sources)
+|              |  &larr; Qdrant Memory (recalls prior research)
++------+------+
+       v
++-------------+
+|   Analyst    |  &larr; Extracts 7 themes, 5+ data points, finds gaps
++------+------+
+       v
++-------------+
+|   Writer     |  &larr; 2+ citations per section, 1+ statistic per section
++------+------+
+       v
++-------------+
+|   Critic     |  &larr; Scores 0-10 on accuracy, completeness, clarity
+|              |  &larr; Routes back to Writer if any score &lt; 7
++------+------+
+       |
+  score &ge; 7 &rarr; Final Report (approved)
+  score &lt; 7 &rarr; Back to Writer (max 3 revisions)</code></pre>
+
+        <p>Each agent has its own system prompt, its own temperature setting, and its own tools. They share state through a single TypedDict, and LangGraph handles the orchestration.</p>
+
+        <hr>
+
+        <h2>Why Four Agents?</h2>
+
+        <p>The number isn't arbitrary. Each agent maps to a distinct cognitive task with different requirements:</p>
+
+        <table>
+          <thead>
+            <tr><th>Agent</th><th>Task</th><th>Temperature</th><th>Why Separate?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>Researcher</strong></td><td>Web search + synthesis</td><td>0.1</td><td>Needs tool access (Tavily, Qdrant). Low temperature for factual accuracy.</td></tr>
+            <tr><td><strong>Analyst</strong></td><td>JSON extraction</td><td>0.0</td><td>Pure structured output. Zero creativity needed.</td></tr>
+            <tr><td><strong>Writer</strong></td><td>Markdown report</td><td>0.3</td><td>Slight creativity for readability. Uses Analyst's structure.</td></tr>
+            <tr><td><strong>Critic</strong></td><td>Score + route</td><td>0.0</td><td>Objective evaluation. Must be deterministic.</td></tr>
+          </tbody>
+        </table>
+
+        <p>The key insight: <strong>the Analyst and Writer have fundamentally incompatible requirements.</strong> The Analyst needs zero-temperature deterministic JSON extraction. The Writer needs some creative flexibility for readability. Combining them in one prompt forces a compromise that weakens both.</p>
+
+        <p>Similarly, the Critic must be independent from the Writer. You can't ask an agent to evaluate its own work objectively &mdash; the same way a newspaper editor doesn't write the articles they review.</p>
+
+        <hr>
+
+        <h2>Why LangGraph?</h2>
+
+        <p>I evaluated three frameworks: LangChain agents (ReAct loop), CrewAI, and LangGraph.</p>
+
+        <p><strong>LangChain ReAct agents</strong> are great for single-agent tool use but don't support structured multi-agent pipelines. There's no concept of "agent A's output flows to agent B."</p>
+
+        <p><strong>CrewAI</strong> is purpose-built for multi-agent workflows, but it abstracts away the graph structure. When I needed conditional edges (Critic &rarr; Writer if score &lt; 7, else &rarr; End), CrewAI's sequential/hierarchical modes didn't map cleanly.</p>
+
+        <p><strong>LangGraph</strong> gives you a directed graph where nodes are functions and edges define the flow:</p>
+
+<pre><code class="language-python">class AgentState(TypedDict):
+    task: str              # Original query
+    research: str          # Raw research notes
+    analysis: dict         # Structured JSON from Analyst
+    draft: str             # Current report draft
+    critique: str          # Critic's JSON evaluation
+    revision_count: int    # Number of revision cycles
+    final_output: str      # Approved final report
+
+def build_graph() -> CompiledStateGraph:
+    sg = StateGraph(AgentState)
+    sg.add_node("researcher", researcher_node)
+    sg.add_node("analyst", analyst_node)
+    sg.add_node("writer", writer_node)
+    sg.add_node("critic", critic_node)
+
+    sg.add_edge(START, "researcher")
+    sg.add_edge("researcher", "analyst")
+    sg.add_edge("analyst", "writer")
+    sg.add_edge("writer", "critic")
+    sg.add_conditional_edges("critic", should_revise,
+                             {"writer": "writer", "end": END})
+    return sg.compile()</code></pre>
+
+        <p>That's the entire orchestration layer. Six nodes, five edges, one conditional. The simplicity is the point &mdash; the complexity lives in the agents themselves, not in the plumbing.</p>
+
+        <hr>
+
+        <h2>The Shared State Pattern</h2>
+
+        <p>Every agent reads from and writes to the same <code>AgentState</code> dictionary. This eliminates the need for message passing between agents &mdash; the state IS the message.</p>
+
+<pre><code>AgentState flow:
+
+  Researcher writes &rarr; state["research"] = "5,375 chars of notes..."
+  Analyst reads state["research"], writes &rarr; state["analysis"] = {7 themes, 5 data points}
+  Writer reads state["analysis"], writes &rarr; state["draft"] = "6,399 chars of report..."
+  Critic reads state["draft"], writes &rarr; state["critique"] = {scores, status, feedback}</code></pre>
+
+        <p>When the Critic sends work back to the Writer, it doesn't need a separate message &mdash; the Writer reads <code>state["critique"]</code> and <code>state["revision_count"]</code> to understand what to fix. The revision count also acts as a safety valve: after 3 cycles, the Critic force-approves to prevent infinite loops.</p>
+
+        <hr>
+
+        <h2>The Technology Stack</h2>
+
+        <table>
+          <thead>
+            <tr><th>Layer</th><th>Technology</th><th>Why</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>LLM</strong></td><td>GPT-4o + GPT-4o-mini</td><td>Hybrid: GPT-4o for heavy lifting, mini for cheap sub-tasks</td></tr>
+            <tr><td><strong>Agent Framework</strong></td><td>LangGraph</td><td>Explicit graph control with conditional routing</td></tr>
+            <tr><td><strong>Web Search</strong></td><td>Tavily Search API</td><td>Structured results with relevance scoring, async support</td></tr>
+            <tr><td><strong>Long-term Memory</strong></td><td>Qdrant (self-hosted)</td><td>Semantic vector search for cross-session knowledge</td></tr>
+            <tr><td><strong>Backend</strong></td><td>FastAPI + WebSocket</td><td>REST for compatibility, WebSocket for real-time streaming</td></tr>
+            <tr><td><strong>Observability</strong></td><td>LangSmith</td><td>Trace every LLM call across the pipeline</td></tr>
+            <tr><td><strong>Infrastructure</strong></td><td>Docker + AWS ECS / Azure</td><td>Multi-cloud deployment via GitHub Actions</td></tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>Live Performance: What the Numbers Say</h2>
+
+        <p><strong>Query:</strong> <em>"What are the main challenges and solutions for deploying large language models in production?"</em></p>
+
+        <table>
+          <thead>
+            <tr><th>Phase</th><th>Agent</th><th>Time</th><th>Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1</td><td>Researcher</td><td>38.93s</td><td>5,375 chars, 23 unique sources, 3 parallel searches</td></tr>
+            <tr><td>2</td><td>Analyst</td><td>19.30s</td><td>7 themes, 5 findings, 5 data points, 2 gaps</td></tr>
+            <tr><td>3</td><td>Writer</td><td>32.61s</td><td>6,399 chars, 589 words, 10+ cited sources</td></tr>
+            <tr><td>4</td><td>Critic</td><td>16.84s</td><td>Accuracy 9/10, Completeness 8/10, Clarity 9/10</td></tr>
+            <tr><td><strong>Total</strong></td><td></td><td><strong>107.68s</strong></td><td><strong>8.7/10 &mdash; APPROVED (first-pass, 0 revisions)</strong></td></tr>
+          </tbody>
+        </table>
+
+        <p>The system produced a 589-word professional report with inline citations in every section, 5 quantitative data points, and an 8.7/10 quality score &mdash; all without a single revision cycle. That's the multi-agent advantage: each specialist produces high-quality output in its domain, so the final product passes quality review on the first try.</p>
+
+        <p>In <a href="part2-building-agents.html">Part 2</a>, I'll dive deep into each agent's implementation: how the Researcher runs 3 parallel searches, how the Analyst enforces 5+ data points, and how the Critic's calibrated rubrics prevent the over-harsh scoring problem that plagued v1.0.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-building-agents.html">Part 2: Building the Agents &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

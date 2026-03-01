@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>What If Your AI Could See, Hear, and Read? (Part 1) — Multimodal AI Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>What If Your AI Could See, Hear, and Read?</h1>
+        <p class="meta">Multimodal AI Assistant Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series on building a multimodal AI assistant with Azure. <a href="part2-how-seven-azure-services-talk.html">Part 2</a> covers the architecture. <a href="part3-from-zero-to-seven-services.html">Part 3</a> covers the implementation and lessons learned.</em></p>
+
+        <hr>
+
+        <h2>The Problem with Text-Only AI</h2>
+
+        <p>You've probably used ChatGPT. You type a question, it types back an answer. It's impressive &mdash; but it's also limited in a way we don't always think about.</p>
+
+        <p>Imagine you're a doctor looking at an X-ray. You could <em>describe</em> the X-ray in words and ask an AI about it, but wouldn't it be better if the AI could just <em>look</em> at the X-ray itself? Or imagine you're in a meeting and you record the conversation. Instead of typing out notes afterward, what if the AI could just <em>listen</em> to the recording?</p>
+
+        <p>That's the gap between <strong>unimodal AI</strong> (text in, text out) and <strong>multimodal AI</strong> (images, audio, <em>and</em> text &mdash; all understood together).</p>
+
+        <p>Most AI applications today are text-only. They're like having a brilliant colleague who can read anything but is blindfolded and wearing earplugs. Multimodal AI takes off the blindfold and removes the earplugs.</p>
+
+        <hr>
+
+        <h2>What We Built</h2>
+
+        <p>We built an AI assistant that can do four things most AI apps can't:</p>
+
+        <ol>
+          <li><strong>See</strong> &mdash; Upload a photo, and it tells you what's in it. Not just "this is a picture of a dog," but <em>where</em> the dog is, what breed it might be, what text appears on signs in the background, and what else is in the frame.</li>
+          <li><strong>Hear</strong> &mdash; Upload an audio recording, and it converts speech to text. A 20-second poetry reading, a 5-minute meeting clip, a voice memo &mdash; it handles them all.</li>
+          <li><strong>Speak</strong> &mdash; Type some text, pick a voice, and it reads it back to you in natural-sounding speech. Not the robotic voice from your GPS in 2008 &mdash; real, human-sounding voices with proper intonation.</li>
+          <li><strong>Understand language deeply</strong> &mdash; Paste any text, and it identifies every person, place, organization, and date mentioned. It detects the emotional tone. It finds personal information (like names and phone numbers) and can automatically redact them. It pulls out the key phrases that summarize the whole thing.</li>
+        </ol>
+
+        <p>And the real magic? It can do all four <strong>at the same time</strong>. Upload a photo <em>and</em> ask a question about it, and the system sees the image, reads your question, reasons about both together, and answers in plain English.</p>
+
+        <hr>
+
+        <h2>A Real Example</h2>
+
+        <p>Here's something we actually tested. We uploaded a photo of a person at an event and asked: <em>"What tie is the person wearing?"</em></p>
+
+        <p>The system:</p>
+        <ul>
+          <li>Checked the photo for harmful content (safety first)</li>
+          <li>Sent the image to GPT-4o, Microsoft's most capable AI model</li>
+          <li>Got back: <strong>"The person is wearing a solid black tie."</strong></li>
+          <li>Checked the answer for harmful content too</li>
+          <li>Saved everything to a database for later review</li>
+        </ul>
+
+        <p>That whole pipeline &mdash; safety check, image analysis, AI reasoning, another safety check, database storage &mdash; happened in a single API call. Behind the scenes, <strong>6 different Azure services</strong> coordinated to make it happen.</p>
+
+        <hr>
+
+        <h2>Why Not Just Use ChatGPT for Everything?</h2>
+
+        <p>Fair question. GPT-4o (the AI model from OpenAI that powers ChatGPT) <em>can</em> look at images and answer questions about them. So why did we wire up 7 different services instead of just using GPT-4o for everything?</p>
+
+        <p>Because GPT-4o is a <em>generalist</em>. It's incredibly smart, but it doesn't give you structured, machine-readable data.</p>
+
+        <p><strong>If you ask GPT-4o:</strong> "What objects are in this photo?"<br>
+        <strong>You get:</strong> A paragraph of text describing what it sees.</p>
+
+        <p><strong>If you ask Azure AI Vision:</strong> "What objects are in this photo?"<br>
+        <strong>You get:</strong> A structured list where each object has a name, a confidence percentage, and the exact pixel coordinates of where it appears in the image (a "bounding box").</p>
+
+        <p>That structured data is what lets you build real applications &mdash; not just chatbots, but systems that can count inventory on shelves, flag suspicious items in security footage, or extract text from scanned documents.</p>
+
+        <table>
+          <thead>
+            <tr><th>What You Need</th><th>GPT-4o</th><th>Dedicated Service</th><th>Winner</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>"Describe this image"</td><td>Great</td><td>Okay</td><td>GPT-4o</td></tr>
+            <tr><td>Exact object locations (bounding boxes)</td><td>Can't do this</td><td>Pixel-perfect coordinates</td><td>Dedicated</td></tr>
+            <tr><td>Convert speech to text</td><td>Can't do this</td><td>Full audio transcription</td><td>Dedicated</td></tr>
+            <tr><td>Read text back as audio</td><td>Can't do this</td><td>Natural neural voices</td><td>Dedicated</td></tr>
+            <tr><td>Find personal information in text</td><td>Hit-or-miss</td><td>100% reliable detection + auto-redaction</td><td>Dedicated</td></tr>
+            <tr><td>Is this content safe?</td><td>Self-censors (unreliable)</td><td>Scored across 4 harm categories</td><td>Dedicated</td></tr>
+          </tbody>
+        </table>
+
+        <p>The takeaway: <strong>GPT-4o is the brain, but the dedicated services are the eyes, ears, and safety guardrails.</strong> You want both.</p>
+
+        <hr>
+
+        <h2>The 7 Services Working Together</h2>
+
+        <p>Our assistant uses 7 Azure AI services. Think of them as a team of specialists:</p>
+
+        <h3>The 4 New Specialists (all free tier)</h3>
+        <ul>
+          <li><strong>Azure AI Vision</strong> &mdash; The eyes. Looks at images and returns captions, tags, detected objects with locations, and any text it can read (OCR).</li>
+          <li><strong>Azure AI Speech</strong> &mdash; The ears and voice. Listens to audio files and converts them to text. Also takes text and speaks it aloud in one of 7 natural-sounding voices.</li>
+          <li><strong>Azure AI Language</strong> &mdash; The linguist. Reads text and identifies people, places, dates, and organizations. Detects emotional tone. Finds personal data and can redact it automatically. Extracts the key phrases that summarize the content.</li>
+          <li><strong>Azure AI Content Safety</strong> &mdash; The security guard. Checks every image and every piece of text for hate speech, violence, sexual content, and self-harm content. Scores each category from 0 (safe) to 6 (severe).</li>
+        </ul>
+
+        <h3>The 3 Reused Utilities</h3>
+        <ul>
+          <li><strong>Azure OpenAI (GPT-4o)</strong> &mdash; The brain. The large language model that can reason about images and text together.</li>
+          <li><strong>Azure Blob Storage</strong> &mdash; The filing cabinet. Stores every uploaded image and audio file so you can retrieve them later.</li>
+          <li><strong>Azure Cosmos DB</strong> &mdash; The database. Saves every analysis result so you can browse your history, filter by type, and review past work.</li>
+        </ul>
+
+        <hr>
+
+        <h2>What Does the User Actually See?</h2>
+
+        <p>We built a full dashboard with 5 tabs:</p>
+
+        <p><strong>Tab 1: Vision</strong> &mdash; Upload an image, see it analyzed in real-time. You get a caption, a list of tags, a table of detected objects with their positions, and any text found in the image. Below that, a Q&amp;A section where you can ask GPT-4o anything about the image.</p>
+
+        <p><strong>Tab 2: Speech</strong> &mdash; Two columns. Upload an audio file for transcription on the left. Type text and pick a voice for text-to-speech on the right. Download the audio as a WAV file.</p>
+
+        <p><strong>Tab 3: Language</strong> &mdash; Paste any text and get a full linguistic breakdown. Four stat cards show detected language, sentiment, entity count, and PII count. A colored gauge bar shows sentiment breakdown. Then entity tables, PII tables with the redacted version, and key phrases displayed as colored tags.</p>
+
+        <p><strong>Tab 4: Multimodal</strong> &mdash; The showpiece. Upload an image and optionally type a question. The system runs everything at once: Vision analysis, GPT-4o description, Language analysis, and Content Safety checks.</p>
+
+        <p><strong>Tab 5: History</strong> &mdash; Every analysis is saved. Browse, filter by type, and expand any entry to see the full JSON result.</p>
+
+        <hr>
+
+        <h2>How Much Does This Cost?</h2>
+
+        <p>All 4 new AI services are on <strong>free tiers</strong>:</p>
+
+        <ul>
+          <li>Vision: 5,000 image analyses per month &mdash; free</li>
+          <li>Speech: 5 hours of transcription + 500,000 characters of text-to-speech per month &mdash; free</li>
+          <li>Language: 5,000 text analyses per month &mdash; free</li>
+          <li>Content Safety: 5,000 moderation checks per month &mdash; free</li>
+        </ul>
+
+        <p>The only real cost is GPT-4o, which charges per token. For development and demo usage, that's about <strong>$5&ndash;10 per month</strong>. That's less than a Netflix subscription for a system that can see, hear, read, speak, and reason.</p>
+
+        <p>In <a href="part2-how-seven-azure-services-talk.html">Part 2</a>, we'll pop the hood and look at how these 7 services actually talk to each other &mdash; tracing a single request through the entire system.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-how-seven-azure-services-talk.html">Part 2: How 7 Azure Services Talk &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
