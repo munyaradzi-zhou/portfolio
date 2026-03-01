@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building FarmMonitor: Teaching AI to Speak Farmer (Part 2) — FarmMonitor Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building FarmMonitor: Teaching AI to Speak Farmer</h1>
+        <p class="meta">FarmMonitor Series &middot; Part 2 of 4</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 4-part series. In <a href="part1-the-problem.html">Part 1</a>, we explored why farmers forget expert advice and how FarmMonitor aims to fix that. Now let's look at how we gave the platform a brain.</em></p>
+
+        <hr>
+
+        <h2>The Translation Problem</h2>
+
+        <p>Imagine you're a maize farmer in Mashonaland East. Your extension officer tells you:</p>
+
+        <blockquote>
+          <p>"You need to implement integrated pest management with a focus on cultural control methods, combined with judicious application of synthetic pyrethroids when economic threshold levels are exceeded."</p>
+        </blockquote>
+
+        <p>What you actually need to hear:</p>
+
+        <blockquote>
+          <p>"Check your maize plants every few days. If you see more than 2-3 armyworms per plant, it's time to spray. Before that, keep your field weeded and destroy any crop residues from last season &mdash; that's where the pests hide."</p>
+        </blockquote>
+
+        <p>Same advice. Completely different understanding. This is the core problem FarmMonitor's AI solves: <strong>translating expert knowledge into practical, actionable language that any farmer can follow.</strong></p>
+
+        <hr>
+
+        <h2>How the AI Chat Works</h2>
+
+        <p>Think of FarmMonitor's AI assistant like a really knowledgeable friend who happens to know everything about Zimbabwean agriculture. You can ask it anything:</p>
+
+        <ul>
+          <li><em>"My maize leaves are turning yellow, what's wrong?"</em></li>
+          <li><em>"When should I plant soybeans this season?"</em></li>
+          <li><em>"How much Compound D fertilizer do I need for 2 hectares?"</em></li>
+          <li><em>"What's the best way to store my harvested wheat?"</em></li>
+        </ul>
+
+        <p>The AI doesn't just pull answers from a textbook. It knows <strong>your specific farm</strong> &mdash; your crops, your location, your soil type, your recent visit history. So when you ask about fertilizer, it doesn't give a generic answer &mdash; it gives advice based on your actual 3-hectare maize field in Marondera.</p>
+
+        <p>Here's a real example of how a conversation flows:</p>
+
+        <p><strong>Farmer:</strong> "My maize is not looking good"</p>
+
+        <p><strong>AI:</strong> "I can see from your records that you planted SC513 maize on your 3-hectare plot in Marondera. A few things to check:</p>
+
+        <ol>
+          <li><strong>Leaf colour</strong> &mdash; Are the leaves yellowing from the bottom up? That usually means nitrogen deficiency. Your last visit notes mention you applied Compound D at planting &mdash; you may need a top-dressing of Ammonium Nitrate (AN) at about 200kg/ha.</li>
+          <li><strong>Leaf damage</strong> &mdash; Do you see small holes or 'window-paning' (thin transparent patches)? That could be fall armyworm. Check inside the leaf whorls.</li>
+          <li><strong>Wilting</strong> &mdash; If plants are wilting in the afternoon but recovering by morning, that's normal heat stress. If they stay wilted, it could be a root problem.</li>
+        </ol>
+
+        <p>Can you describe what you're seeing, or better yet, send me a photo?"</p>
+
+        <p>That's not a canned response. The AI built that answer by combining general agricultural knowledge with the farmer's actual records from the database.</p>
+
+        <hr>
+
+        <h2>The Architecture Behind the Curtain</h2>
+
+        <p>Under the hood, here's what happens when a farmer types a message:</p>
+
+        <ol>
+          <li><strong>Context gathering</strong> &mdash; The system pulls the farmer's records: current crops, recent visits, pending recommendations, location, and language preference</li>
+          <li><strong>Prompt construction</strong> &mdash; All that context gets bundled into a prompt for Claude (Anthropic's AI), along with a system instruction that says: <em>"You are an agricultural advisor for Zimbabwean smallholder farmers. Explain things simply. Use local crop varieties and practices."</em></li>
+          <li><strong>AI response</strong> &mdash; Claude generates an answer that's contextual, practical, and in the farmer's preferred language</li>
+          <li><strong>History</strong> &mdash; The conversation is saved, so the AI remembers what you discussed last time</li>
+        </ol>
+
+<pre><code class="language-typescript">// Context-aware prompt construction (simplified)
+const systemPrompt = `You are an agricultural advisor for
+Zimbabwean smallholder farmers.
+
+Farmer: ${farmer.name}
+Location: ${farmer.location}
+Current crops: ${crops.map(c => c.name).join(', ')}
+Recent visit notes: ${latestVisit.observations}
+Pending recommendations: ${recommendations.map(r => r.text).join('; ')}
+
+Explain things simply. Use local crop varieties and practices.
+When relevant, reference the farmer's specific situation.`;</code></pre>
+
+        <p>It's like giving every farmer their own personal agricultural advisor who's available 24/7, knows their farm intimately, and never gets tired.</p>
+
+        <hr>
+
+        <h2>Photo Diagnosis: A Picture is Worth a Thousand Words</h2>
+
+        <p>This feature was born from a simple observation: farmers often can't describe crop problems in technical terms, but they can <strong>point their phone camera at it</strong>.</p>
+
+        <p><strong>Scenario:</strong> You walk through your soybean field and notice strange spots on the leaves. You don't know if it's a fungal disease, nutrient deficiency, or just sunburn.</p>
+
+        <p><strong>What you do:</strong></p>
+        <ol>
+          <li>Take a photo with your phone</li>
+          <li>Send it through the FarmMonitor app (or just forward it to your Telegram bot)</li>
+          <li>Optionally add a caption: "What's wrong with my soybeans?"</li>
+        </ol>
+
+        <p><strong>What happens next:</strong></p>
+        <ol>
+          <li>The photo gets sent to Claude's vision AI</li>
+          <li>The AI analyzes the image &mdash; looking at leaf colour, spot patterns, plant structure</li>
+          <li>It cross-references with your farm data (crop type, location, season, recent weather)</li>
+          <li>You get back a diagnosis with actionable next steps</li>
+        </ol>
+
+        <p><strong>Real response example:</strong></p>
+
+        <blockquote>
+          <p>"Based on the photo, this looks like <strong>soybean rust</strong> (Phakopsora pachyrhizi). I can see the small, rust-coloured pustules on the underside of the leaves &mdash; that's the telltale sign.</p>
+          <p><strong>What to do now:</strong></p>
+          <ol>
+            <li>Spray with a triazole fungicide (like Amistar or Score) as soon as possible</li>
+            <li>Make sure to spray the undersides of leaves &mdash; that's where the fungus lives</li>
+            <li>A second spray may be needed in 14 days if the infection is severe</li>
+          </ol>
+          <p><strong>Prevention for next season:</strong> Plant earlier to avoid peak rust season, and consider rust-tolerant varieties like SC Samba."</p>
+        </blockquote>
+
+        <p>This kind of instant, visual diagnosis would normally require waiting weeks for an extension officer visit, or driving to the nearest agricultural office with a leaf sample. Now it takes 30 seconds.</p>
+
+        <hr>
+
+        <h2>Smart Recommendations: AI as the Officer's Assistant</h2>
+
+        <p>Here's where the AI helps the extension officer, not just the farmer.</p>
+
+        <p>Picture an officer visiting a farm. They walk the fields, check the livestock, talk to the farmer, and take mental notes. Back in their truck, they type up observations:</p>
+
+        <blockquote>
+          <p>"Maize at V6 stage, some yellowing in lower leaves. Noticed fall armyworm damage in eastern section &mdash; about 30% of plants affected. Farmer hasn't applied top-dressing yet. Cattle dip tank needs repair. Water storage running low."</p>
+        </blockquote>
+
+        <p>Turning these raw observations into structured, prioritized action items is tedious work &mdash; especially when you've done five farm visits in a day. This is where the <strong>AI Suggest</strong> button comes in.</p>
+
+        <p>The officer clicks it, and the AI reads their observations and generates recommendations:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Priority</th>
+              <th>Recommendation</th>
+              <th>Due</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>High</td>
+              <td>Apply Ampligo insecticide for fall armyworm &mdash; 30% damage is above threshold, treat within 48 hours</td>
+              <td>2 days</td>
+            </tr>
+            <tr>
+              <td>High</td>
+              <td>Top-dress with AN fertilizer at 200kg/ha &mdash; yellowing indicates nitrogen deficiency</td>
+              <td>1 week</td>
+            </tr>
+            <tr>
+              <td>Medium</td>
+              <td>Repair cattle dip tank before the rainy season to prevent tick-borne diseases</td>
+              <td>2 weeks</td>
+            </tr>
+            <tr>
+              <td>Low</td>
+              <td>Consider installing a 5000L water tank for dry-season irrigation backup</td>
+              <td>1 month</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Each recommendation is automatically saved, tracked, and pushed to the farmer's dashboard and Telegram bot. The system follows up on completion &mdash; so the officer can check at a glance which farmers have acted on advice and which haven't.</p>
+
+        <hr>
+
+        <h2>Speaking the Farmer's Language &mdash; Literally</h2>
+
+        <p>Zimbabwe has three main languages: English, Shona, and Ndebele. Most farmers are more comfortable in their mother tongue, but agricultural advice is almost always delivered in English.</p>
+
+        <p>FarmMonitor lets farmers choose their language preference. When a Shona-speaking farmer asks a question, the AI responds in Shona:</p>
+
+        <p><strong>Farmer:</strong> "Chirimwa changu chemaize hachisi kukura zvakanaka"<br>
+        <em>(My maize crop isn't growing well)</em></p>
+
+        <p><strong>AI (in Shona):</strong> "Kubva pamarecords enyu, makadyara SC513 pamaeka 3 kuMarondera. Ngatitarisei zvinhu zvishoma..."</p>
+
+        <p>This isn't just Google Translate slapped on top. Claude understands Shona well enough to use proper agricultural terminology and local idioms. It makes the difference between advice that's technically correct and advice that's actually understood.</p>
+
+        <hr>
+
+        <h2>The Voice Shortcut</h2>
+
+        <p>Not everyone wants to type, especially when you're standing in a muddy field with dirty hands. FarmMonitor includes a microphone button in the web chat that uses your phone's built-in speech recognition.</p>
+
+        <p>Press the button, say your question out loud, and the speech gets converted to text and sent to the AI. It's the same experience as typing, just hands-free. Simple, but practical &mdash; because the best feature is the one people actually use.</p>
+
+        <hr>
+
+        <h2>What the AI Doesn't Do</h2>
+
+        <p>It's worth noting what FarmMonitor's AI is <strong>not</strong> trying to be:</p>
+
+        <ul>
+          <li><strong>Not a replacement for extension officers</strong> &mdash; It's a tool that extends their reach between visits</li>
+          <li><strong>Not a diagnostic authority</strong> &mdash; It suggests possibilities and recommends expert follow-up for serious issues</li>
+          <li><strong>Not an autonomous decision-maker</strong> &mdash; Officers review and approve AI-generated recommendations before they're sent</li>
+          <li><strong>Not a general chatbot</strong> &mdash; It stays focused on agriculture and the farmer's specific context</li>
+        </ul>
+
+        <p>The AI is most useful as a <strong>bridge</strong> &mdash; bridging the gap between a visit and the next visit, between technical jargon and practical understanding, between English reports and the farmer's own language.</p>
+
+        <hr>
+
+        <h2>What's Next</h2>
+
+        <p>In <a href="part3-reaching-every-farmer.html">Part 3</a>, we tackle the elephant in the room: what happens when your user doesn't have reliable internet, or doesn't have a smartphone at all? We'll explore how Telegram bots and SMS gateways bring FarmMonitor to the last mile.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-the-problem.html">&larr; Part 1: The Problem Nobody Talks About</a>
+        <a href="part3-reaching-every-farmer.html">Part 3: Reaching Every Farmer &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

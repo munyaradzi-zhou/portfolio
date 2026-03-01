@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building an Enterprise RAG System from Scratch (Part 1) — RAG Intelligence Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building an Enterprise RAG System from Scratch</h1>
+        <p class="meta">RAG Document Intelligence Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series where I build a production-ready RAG document intelligence system and show every component, every decision, and every real input/output along the way. <a href="part2-query-pipeline.html">Part 2</a> covers the query pipeline. <a href="part3-architectural-decisions.html">Part 3</a> covers architectural decisions and lessons learned.</em></p>
+
+        <hr>
+
+        <p>Everyone talks about RAG. Few show you what it actually looks like inside &mdash; the parsing edge cases, the chunking strategy tradeoffs, the moment you realize your 3072-dimensional vectors need a home. By the end of this series, you'll understand not just <em>what</em> RAG is, but <em>why</em> each piece exists and what happens when you get it wrong.</p>
+
+        <h2>What We're Building</h2>
+
+        <p>A system where users can:</p>
+        <ol>
+          <li>Upload documents (PDF, DOCX, TXT)</li>
+          <li>Ask natural-language questions</li>
+          <li>Get answers grounded in the documents with source citations like <code>[Doc: company_policy.txt, Page: 1]</code></li>
+        </ol>
+
+        <p>The stack:</p>
+        <ul>
+          <li><strong>FastAPI</strong> backend with async endpoints</li>
+          <li><strong>LlamaIndex</strong> for sentence-window chunking</li>
+          <li><strong>Azure OpenAI</strong> for embeddings (<code>text-embedding-3-large</code>) and generation</li>
+          <li><strong>Qdrant</strong> for vector storage and search</li>
+          <li><strong>Streamlit</strong> for the frontend</li>
+          <li><strong>Docker Compose</strong> to tie it all together</li>
+        </ul>
+
+<pre><code>Document Upload
+     |
+     v
+[ Parser ] --&gt; [ Chunker ] --&gt; [ Embedder ] --&gt; [ Qdrant ]
+  PDF/DOCX/TXT    Sentence-       Azure OpenAI       Vector DB
+  -&gt; raw text     Window          3072-dim            Cosine
+                  (window=3)      vectors             HNSW index</code></pre>
+
+        <p>Let's build it piece by piece.</p>
+
+        <hr>
+
+        <h2>Step 1: Parsing Documents</h2>
+
+        <p>The parser is the unsexy foundation that everything else depends on. Get it wrong, and your chunks contain garbage, your embeddings encode garbage, and your LLM confidently hallucinates from garbage.</p>
+
+        <p>I support three formats with dedicated libraries:</p>
+
+<pre><code class="language-python">import fitz  # PyMuPDF
+from docx import Document as DocxDocument
+
+PARSERS = {
+    ".pdf": parse_pdf,    # PyMuPDF - page-level text extraction
+    ".docx": parse_docx,  # python-docx - paragraph joining
+    ".txt": parse_txt,    # Built-in - just read_text()
+}</code></pre>
+
+        <p>Each parser returns a list of <code>ParsedPage</code> objects:</p>
+
+<pre><code class="language-python">@dataclass
+class ParsedPage:
+    text: str
+    page_number: int
+    filename: str</code></pre>
+
+        <p><strong>Why page-level granularity?</strong> Because citations need it. When the LLM says <code>[Doc: report.pdf, Page: 7]</code>, the user can go verify. If you flatten everything into one blob of text, you lose this traceability.</p>
+
+        <p><strong>Real output</strong> from parsing our test document (a 59-line employee handbook):</p>
+
+<pre><code class="language-python">[ParsedPage(
+    text="Acme Corp Employee Handbook - 2025 Edition\n\nChapter 1...",
+    page_number=1,
+    filename="company_policy.txt"
+)]
+# 1 page, 1,770 bytes - parsed in 0.1ms</code></pre>
+
+        <hr>
+
+        <h2>Step 2: Chunking &mdash; Where Most RAG Systems Go Wrong</h2>
+
+        <p>This is where it gets interesting. Chunking strategy is the single biggest lever you have over retrieval quality, and most tutorials gloss over it with <code>RecursiveCharacterTextSplitter(chunk_size=500)</code>.</p>
+
+        <p>The problem with fixed-size chunking:</p>
+
+<pre><code>"...submitted within 30 days of the expense being incurred. Receipts are"
+"required for all expenses over $25. Reimbursements are processed within"</code></pre>
+
+        <p>That first chunk ends mid-thought. If someone asks "Do I need receipts for a $20 expense?", the relevant information is split across two chunks. The retriever might only find one of them.</p>
+
+        <h3>Sentence-Window Chunking</h3>
+
+        <p>I use LlamaIndex's <code>SentenceWindowNodeParser</code>, which does something clever: it stores two versions of each chunk.</p>
+
+<pre><code class="language-python">from llama_index.core.node_parser import SentenceWindowNodeParser
+
+node_parser = SentenceWindowNodeParser.from_defaults(
+    window_size=3,  # 3 sentences on each side
+    window_metadata_key="window",
+    original_text_metadata_key="original_text",
+)</code></pre>
+
+        <p>For each sentence in the document, it produces:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Field</th>
+              <th>What it stores</th>
+              <th>What it's used for</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>.text</code></td>
+              <td>The core sentence</td>
+              <td>Shown to the LLM as context</td>
+            </tr>
+            <tr>
+              <td><code>.window</code></td>
+              <td>Core + 3 sentences before + 3 after</td>
+              <td>Embedded into the vector</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p><strong>Why?</strong> The embedding captures semantic meaning from the wider context (the window), so retrieval is more accurate. But the text shown to the LLM is focused and concise, so you don't waste tokens on surrounding fluff.</p>
+
+        <p><strong>Real output</strong> &mdash; 15 chunks from a single page:</p>
+
+<pre><code class="language-python">Chunk(
+    text="Acme Corp allows all full-time employees to work remotely up to 3 days per week.",
+    window="Acme Corp Employee Handbook... Remote work days must be scheduled...",
+    filename="company_policy.txt",
+    page_number=1,
+    chunk_index=0
+)</code></pre>
+
+        <p>The core text is one sentence. The window is seven sentences. The embedding sees the full picture; the LLM gets the precise answer.</p>
+
+        <p><strong>Latency:</strong> 8.2ms for 15 chunks. Chunking is never the bottleneck.</p>
+
+        <hr>
+
+        <h2>Step 3: Embedding and Indexing</h2>
+
+        <p>Each chunk's window text gets embedded into a 3072-dimensional vector using Azure OpenAI's <code>text-embedding-3-large</code> model, then stored in Qdrant.</p>
+
+<pre><code class="language-python">EMBEDDING_DIMENSION = 3072  # text-embedding-3-large
+
+def ingest_chunks(chunks: list[Chunk]) -&gt; int:
+    # Embed the WINDOW text, not the core text
+    window_texts = [chunk.window for chunk in chunks]
+
+    for i in range(0, len(window_texts), batch_size):
+        batch_texts = window_texts[i : i + batch_size]
+        embeddings = embed_texts(batch_texts, openai_client)
+
+        points = [
+            PointStruct(
+                id=str(uuid.uuid4()),
+                vector=embedding,
+                payload={
+                    "text": chunk.text,        # Core sentence
+                    "window": chunk.window,    # Full context
+                    "filename": chunk.filename,
+                    "page_number": chunk.page_number,
+                    "chunk_index": chunk.chunk_index,
+                },
+            )
+            for embedding, chunk in zip(embeddings, batch_chunks)
+        ]
+        qdrant_client.upsert(collection_name=collection, points=points)</code></pre>
+
+        <p>A few things to notice:</p>
+
+        <ol>
+          <li><strong>We embed the window, but store the core text in the payload.</strong> This is the key insight of sentence-window chunking. The vector represents the broad context; the payload contains the focused answer.</li>
+          <li><strong>The payload carries everything needed for citations</strong> &mdash; filename, page number, chunk index, and the original text.</li>
+          <li><strong>Batch size of 100.</strong> Azure OpenAI's embedding endpoint handles batches efficiently. For our 15-chunk document, it's a single API call.</li>
+        </ol>
+
+        <p><strong>Real numbers:</strong></p>
+        <ul>
+          <li>15 chunks embedded in a single batch</li>
+          <li>Each vector: 3072 floats (12 KB)</li>
+          <li>API latency: 387ms</li>
+          <li>Qdrant upsert: ~10ms</li>
+        </ul>
+
+        <hr>
+
+        <h2>The Ingest Endpoint</h2>
+
+        <p>All three steps are orchestrated by a single FastAPI endpoint:</p>
+
+<pre><code class="language-python">@router.post("/", response_model=IngestResponse)
+async def ingest_document(file: UploadFile = File(...)):
+    with trace_ingestion(file.filename) as trace:  # LangFuse tracing
+        pages = parse_document(tmp_path)             # Step 1: Parse
+        chunks = chunk_pages(pages)                   # Step 2: Chunk
+        indexed = ingest_chunks(chunks)               # Step 3: Embed + Index
+
+    return IngestResponse(
+        filename=file.filename,
+        pages_parsed=len(pages),
+        chunks_created=len(chunks),
+        chunks_indexed=indexed,
+    )</code></pre>
+
+        <p><strong>Real response:</strong></p>
+
+<pre><code class="language-json">{
+    "filename": "company_policy.txt",
+    "pages_parsed": 1,
+    "chunks_created": 15,
+    "chunks_indexed": 15
+}</code></pre>
+
+        <p>Upload a 59-line text file, get 15 semantically-windowed chunks stored as 3072-dimensional vectors in under 400ms. The document is now queryable.</p>
+
+        <hr>
+
+        <h2>What We Have So Far</h2>
+
+<pre><code>company_policy.txt (1,770 bytes)
+    |
+    v  [0.1ms]
+1 ParsedPage
+    |
+    v  [8.2ms]
+15 Chunks (core sentence + 7-sentence window each)
+    |
+    v  [387ms]
+15 vectors in Qdrant (3072-dim, cosine, HNSW-indexed)</code></pre>
+
+        <p>The document is sitting in Qdrant, waiting for questions. In <a href="part2-query-pipeline.html">Part 2</a>, we'll build the query pipeline &mdash; hybrid retrieval, cross-encoder reranking, and the LLM generation layer that turns retrieved chunks into cited answers.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-query-pipeline.html">Part 2: The Query Pipeline &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

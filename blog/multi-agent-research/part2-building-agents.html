@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building the Agents (Part 2) — Multi-Agent Research Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building the Agents &mdash; From Web Search to Self-Critiquing Reports</h1>
+        <p class="meta">Multi-Agent Research Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series. In <a href="part1-architecture.html">Part 1</a>, I covered the architecture: why multi-agent beats single-agent, why LangGraph, and the 4-agent pipeline design. Now let's build the agents. <a href="part3-deployment-results.html">Part 3</a> covers deployment and live results.</em></p>
+
+        <hr>
+
+        <h2>The Tools Layer</h2>
+
+        <p>Before diving into agents, let's look at the three tools they share.</p>
+
+        <h3>Tavily Search &mdash; Structured Web Results</h3>
+
+        <p>Most web search APIs return raw HTML or snippets you have to parse. Tavily returns structured JSON with relevance scores:</p>
+
+<pre><code class="language-python">async def tavily_search(query: str, max_results: int = 5) -> list[dict]:
+    client = AsyncTavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
+    response = await client.search(query, max_results=max_results,
+                                    search_depth="advanced")
+    return [
+        {"title": r["title"], "url": r["url"],
+         "content": r["content"], "score": r["score"]}
+        for r in response.get("results", [])
+    ]</code></pre>
+
+        <p>Each result comes with a relevance score (0.0&ndash;1.0). The <code>search_depth="advanced"</code> setting enables deep crawling, pulling content from within pages rather than just metadata.</p>
+
+        <p><strong>Why Tavily over Serper/SerpAPI?</strong> Structured output (no HTML parsing), built-in relevance scoring, and async support. The free tier gives 1,000 searches/month.</p>
+
+        <h3>Qdrant Memory &mdash; Cross-Session Knowledge</h3>
+
+        <p>The Researcher doesn't start from zero on every query. Qdrant stores research notes from prior sessions, so the system accumulates institutional knowledge over time.</p>
+
+<pre><code class="language-python">class MemoryStore:
+    def __init__(self):
+        self.client = AsyncQdrantClient(url=os.getenv("QDRANT_URL"))
+        self.openai = AsyncOpenAI()
+
+    async def store(self, content: str, metadata: dict) -> str:
+        embedding = await self._embed(content[:2000])
+        point_id = str(uuid4())
+        await self.client.upsert("agent_memory", points=[
+            PointStruct(id=point_id, vector=embedding,
+                       payload={"content": content[:2000], **metadata})
+        ])
+        return point_id
+
+    async def recall(self, query: str, top_k: int = 3) -> list[dict]:
+        embedding = await self._embed(query)
+        results = await self.client.search("agent_memory",
+                                            query_vector=embedding, limit=top_k)
+        return [{"content": r.payload["content"],
+                 "score": r.score, **r.payload} for r in results]</code></pre>
+
+        <p>The embedding model is <code>text-embedding-3-small</code> (1,536 dimensions, cosine distance). The 2,000-character limit on stored content is deliberate &mdash; we want the key findings, not the raw dump.</p>
+
+        <p><strong>Graceful degradation:</strong> Every Qdrant call is wrapped in try/except. If the vector database is down, the pipeline continues without memory. No crashes, no retries, just a slightly less informed first step.</p>
+
+        <h3>Python REPL &mdash; Sandboxed Code Execution</h3>
+
+<pre><code class="language-python">ALLOWED_BUILTINS = {
+    "abs", "all", "any", "bool", "dict", "enumerate", "filter",
+    "float", "int", "len", "list", "map", "max", "min", "print",
+    "range", "round", "set", "sorted", "str", "sum", "tuple", "zip",
+}
+SAFE_MODULES = {"math", "statistics", "json", "datetime", "collections", "itertools"}</code></pre>
+
+        <p>Attempting <code>import os</code> returns: <em>"Import of 'os' is not allowed in sandboxed environment."</em> This tool exists for computational verification &mdash; if an agent needs to calculate a compound growth rate or verify a statistical claim, it can run actual Python rather than doing math in natural language.</p>
+
+        <hr>
+
+        <h2>Agent 1: The Researcher</h2>
+
+        <p>The Researcher is the most complex agent. Its job: turn a vague query into 5,000+ characters of structured, cited research notes.</p>
+
+        <h3>Multi-Pass Search Strategy</h3>
+
+        <p>Rather than sending the user's raw query to Tavily once, the Researcher generates three targeted sub-queries and searches in parallel:</p>
+
+<pre><code class="language-python">async def researcher_node(state: AgentState) -> dict:
+    task = state["task"]
+    memory = MemoryStore()
+
+    # Step 1: Check long-term memory for prior research
+    prior = await memory.recall(task, top_k=3)
+
+    # Step 2: Generate 3 targeted sub-queries (GPT-4o-mini)
+    sub_queries = await _generate_sub_queries(task)
+
+    # Step 3: Run 3 Tavily searches IN PARALLEL (8 results each)
+    search_tasks = [tavily_search(q, max_results=8) for q in sub_queries]
+    all_results = await asyncio.gather(*search_tasks)
+
+    # Step 4: Flatten and deduplicate by URL
+    seen_urls = set()
+    unique_results = []
+    for results in all_results:
+        for r in results:
+            if r["url"] not in seen_urls:
+                seen_urls.add(r["url"])
+                unique_results.append(r)
+    # 3 x 8 = 24 results &rarr; ~23 after dedup
+
+    # Step 5: Synthesize into structured notes (GPT-4o)
+    research_notes = await _synthesize(task, unique_results, prior)
+
+    # Step 6: Store in memory for future sessions
+    await memory.store(research_notes, {"task": task, "type": "research"})
+
+    return {"research": research_notes}</code></pre>
+
+        <p><strong>Why 3 sub-queries?</strong> A single search gets you ~5 results from one angle. Three targeted searches from different angles yield ~23 unique sources after URL deduplication &mdash; a <strong>4.6x amplification</strong> in source coverage with essentially the same wall-clock time, thanks to <code>asyncio.gather()</code>.</p>
+
+        <p><strong>Timing breakdown:</strong> Memory recall: 1.51s. Sub-query generation (GPT-4o-mini): ~2.0s. 3x Tavily search (parallel): ~8.0s. GPT-4o synthesis: ~24.0s. Memory store: ~2.0s. <strong>Total: 38.93s.</strong></p>
+
+        <hr>
+
+        <h2>Agent 2: The Analyst</h2>
+
+        <p>The Analyst converts 5,375 characters of unstructured research notes into a precise JSON structure. Temperature: <strong>0.0</strong> &mdash; zero creativity, maximum determinism.</p>
+
+        <h3>Enforced Data Extraction</h3>
+
+        <p>The system prompt doesn't just ask for "key insights." It demands specific structures:</p>
+
+<pre><code class="language-json">{
+  "key_themes": ["theme1", "theme2", ...],
+  "main_findings": [
+    {
+      "finding": "Deploying LLMs requires substantial GPU resources",
+      "evidence": "GPT-4 has up to a trillion parameters",
+      "source": "https://seldon.io/...",
+      "importance": "high"
+    }
+  ],
+  "data_points": [
+    {
+      "metric": "Number of parameters in GPT-4",
+      "value": "up to a trillion",
+      "source": "https://seldon.io/..."
+    }
+  ],
+  "gaps": ["Missing cost data for deployment strategies"],
+  "recommended_structure": ["Introduction", "Section 1", ...]
+}</code></pre>
+
+        <p>The critical constraint: <strong>data_points must contain 5+ entries.</strong> This forces the model to dig for quantitative information rather than making vague qualitative statements.</p>
+
+        <p><strong>Live output:</strong> 7 themes, 5 findings (3 high-importance, 2 medium), 5 data points, 2 identified gaps, and a recommended 7-section report structure. <strong>Timing: 19.30 seconds.</strong></p>
+
+        <hr>
+
+        <h2>Agent 3: The Writer</h2>
+
+        <h3>Citation and Statistics Enforcement</h3>
+
+        <p>The system prompt includes explicit requirements:</p>
+
+<pre><code>For EVERY section you write:
+  1. Include at least 2 inline citations [Source: URL]
+  2. Include at least 1 specific number, statistic, or date
+  3. Pair every challenge with a concrete solution
+  4. Use the Analyst's recommended_structure as your outline
+
+Before submitting, verify:
+  [ ] Every section has 2+ citations?
+  [ ] Every section has a statistic?
+  [ ] Any vague claims without numbers?
+  [ ] Executive Summary includes 2-3 key numbers?</code></pre>
+
+        <p>This checklist approach works because GPT-4o treats explicit enumerated requirements as hard constraints. Without these rules, the Writer produces generic paragraphs. With them, every section contains verifiable claims with sources.</p>
+
+        <h3>Revision Awareness</h3>
+
+<pre><code class="language-python">async def writer_node(state: AgentState) -> dict:
+    analysis = state["analysis"]
+    revision_count = state.get("revision_count", 0)
+    critique = state.get("critique", "")
+
+    user_msg = f"Analysis:\n{json.dumps(analysis, indent=2)}\n\n"
+    user_msg += f"Task: {state['task']}\n"
+
+    if revision_count > 0 and critique:
+        user_msg += f"\n--- REVISION #{revision_count} ---\n"
+        user_msg += f"Previous critique:\n{critique}\n"
+        user_msg += "Address the specific issues above.\n"
+
+    response = await llm.ainvoke([
+        SystemMessage(content=WRITER_SYSTEM),
+        HumanMessage(content=user_msg)
+    ])
+
+    return {"draft": response.content, "revision_count": revision_count + 1}</code></pre>
+
+        <p><strong>Live output:</strong> 6,399 characters, 589 words, 10+ inline cited sources. Every section contains at least 2 citations and 1 data point. <strong>Timing: 32.61 seconds.</strong></p>
+
+        <hr>
+
+        <h2>Agent 4: The Critic</h2>
+
+        <p>The Critic is the quality gate &mdash; the component that transforms this from "a pipeline that generates text" into "a system that guarantees quality."</p>
+
+        <h3>Calibrated Scoring Rubrics</h3>
+
+<pre><code>ACCURACY (0-10):
+  9-10: Every claim has a citation, no unsupported assertions
+  7-8:  Most claims cited, minor gaps
+  5-6:  Multiple unsupported claims
+
+COMPLETENESS (0-10):
+  9-10: Covers all major angles with depth
+  7-8:  Covers main angles, some deeper exploration needed
+  5-6:  Major aspects missing
+  Calibration: 3+ angles with citations &rarr; auto &ge; 7
+
+CLARITY (0-10):
+  9-10: Excellent structure, logical flow
+  7-8:  Good structure, minor readability issues
+  5-6:  Disorganized or hard to follow
+  Calibration: Exec Summary + body + Takeaways &rarr; auto &ge; 7</code></pre>
+
+        <p>The calibration notes are critical. In v1.0, the Critic was over-harsh &mdash; scoring Completeness at 5&ndash;6/10 because the report didn't cover every tangential subtopic. This triggered unnecessary revision loops. The calibration rules establish baseline expectations and prevent the LLM's tendency toward perfectionism from creating infinite loops.</p>
+
+        <h3>The Routing Decision</h3>
+
+<pre><code class="language-python">def should_revise(state: AgentState) -> str:
+    critique = json.loads(state["critique"])
+    if critique["status"] == "APPROVED":
+        return "end"
+    if state["revision_count"] >= 3:
+        return "end"  # Safety valve
+    return "writer"</code></pre>
+
+        <p>The max-2-instructions limit on revision feedback is deliberate. Giving the Writer a laundry list of 5+ issues leads to poor revisions &mdash; the model tries to address everything and addresses nothing well. Two focused instructions produce targeted improvements.</p>
+
+        <p><strong>Live evaluation:</strong> Accuracy 9/10, Completeness 8/10, Clarity 9/10 &mdash; <strong>8.7/10 APPROVED on the first pass.</strong> No revisions needed. <strong>Timing: 16.84 seconds.</strong></p>
+
+        <hr>
+
+        <h2>The v1.0 &rarr; v2.0 Evolution</h2>
+
+        <p>The most important lesson: <strong>prompt engineering is system design, not just writing words.</strong></p>
+
+        <table>
+          <thead>
+            <tr><th>Component</th><th>v1.0 Problem</th><th>v2.0 Fix</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Researcher</td><td>Single search query &rarr; 5 results</td><td>3 parallel sub-queries &rarr; 23+ unique sources (4.6x)</td></tr>
+            <tr><td>Analyst</td><td>No minimum data point requirement</td><td>Enforced 5+ data points</td></tr>
+            <tr><td>Writer</td><td>No citation enforcement &rarr; generic paragraphs</td><td>2+ citations per section mandate</td></tr>
+            <tr><td>Critic</td><td>Uncalibrated rubrics &rarr; endless revision loops</td><td>Calibrated rubrics with auto-floor rules</td></tr>
+          </tbody>
+        </table>
+
+        <p>The total prompt changes were maybe 200 lines across 4 templates. But those 200 lines transformed a system that looped 3x on every query into one that approves on the first pass with an 8.7/10 score.</p>
+
+        <p>In <a href="part3-deployment-results.html">Part 3</a>, I'll cover production deployment: FastAPI with WebSocket streaming, the Streamlit dashboard, Docker, multi-cloud CI/CD, and the evaluation framework.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-architecture.html">&larr; Part 1: Architecture</a>
+        <a href="part3-deployment-results.html">Part 3: Deployment &amp; Results &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

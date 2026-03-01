@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building FarmMonitor: The Business of Farming (Part 4) — FarmMonitor Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building FarmMonitor: The Business of Farming</h1>
+        <p class="meta">FarmMonitor Series &middot; Part 4 of 4</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 4 (the final part) of a 4-part series. In <a href="part3-reaching-every-farmer.html">Part 3</a>, we tackled how Telegram and SMS reach farmers at the last mile. Now we address the question every farmer eventually asks: "Am I actually making money?"</em></p>
+
+        <hr>
+
+        <h2>The Farmer Who Didn't Know He Was Losing Money</h2>
+
+        <p>Meet Gideon. He farms wheat and tobacco on 6 hectares near Beitbridge. Last season, he harvested 5 tonnes of wheat and sold it for $1,750. He felt pretty good about it.</p>
+
+        <p>What Gideon didn't calculate:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Expense</th>
+              <th>Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Seed (SC Eagle wheat, 4 bags)</td><td>$120</td></tr>
+            <tr><td>MAP fertilizer (8 bags)</td><td>$336</td></tr>
+            <tr><td>AN top-dressing (6 bags)</td><td>$210</td></tr>
+            <tr><td>Tractor hire (ploughing + discing)</td><td>$300</td></tr>
+            <tr><td>Labour (planting + weeding, 20 days)</td><td>$160</td></tr>
+            <tr><td>Fuel for irrigation pump</td><td>$200</td></tr>
+            <tr><td>Pesticide (2 applications)</td><td>$140</td></tr>
+            <tr><td><strong>Total costs</strong></td><td><strong>$1,466</strong></td></tr>
+          </tbody>
+        </table>
+
+        <p>His actual profit? <strong>$284</strong> for an entire season's work on 3 hectares. That's roughly $95 per hectare, or less than $1 per day.</p>
+
+        <p>Now imagine if Gideon's neighbour grew the same wheat on 3 hectares but harvested 7 tonnes (because they applied fertilizer at the right time). Same costs, but $2,450 in revenue &mdash; a profit of $984.</p>
+
+        <p>The difference isn't luck. It's <strong>information</strong>. And that's what the business features of FarmMonitor are designed to provide.</p>
+
+        <hr>
+
+        <h2>Input Tracking: Where Does the Money Go?</h2>
+
+        <p>Most smallholder farmers don't keep detailed records of what they spend. They buy seeds here, fertilizer there, hire a tractor when they can afford it, and at the end of the season they know roughly how much they harvested and what they sold it for. The middle &mdash; all the costs &mdash; is a blur.</p>
+
+        <p>FarmMonitor's <strong>Inputs &amp; Costs</strong> feature works like a simple expense tracker designed specifically for farming. Every time a farmer buys something for their farm, they (or their officer) record it:</p>
+
+<pre><code>Type:          Fertilizer
+Name:          Compound D
+Quantity:      6 bags (50kg each)
+Unit Cost:     $40 per bag
+Total:         $240
+Linked to:     Maize (2024-2025 Summer)
+Supplier:      Chiredzi Agro Supplies
+Date:          15 November 2024</code></pre>
+
+        <p>Over the season, these records build up. The farmer can see &mdash; maybe for the first time &mdash; exactly where their money goes. It's like checking your bank statement and realizing how much you've been spending on coffee, except it's fertilizer and tractor hire.</p>
+
+        <hr>
+
+        <h2>The Profit/Loss Calculator</h2>
+
+        <p>This is where the numbers tell a story. FarmMonitor takes two pieces of information:</p>
+
+        <ol>
+          <li><strong>Revenue</strong> = How much you harvested &times; what you sold it for</li>
+          <li><strong>Costs</strong> = Sum of all recorded inputs for that crop</li>
+        </ol>
+
+        <p>And produces a report:</p>
+
+<pre><code>+----------------------------------------------+
+|           Profit &amp; Loss Summary              |
++----------------------------------------------+
+|  Total Revenue:     $3,550.00                |
+|  Total Costs:       $1,890.00                |
+|  Net Profit:        $1,660.00                |
++----------------------------------------------+
+|                                              |
+|  Maize (2024-2025 Summer)                    |
+|  Revenue: $2,500.00 (10t x $250/t)          |
+|  Costs:   $1,240.00                          |
+|  Profit:  $1,260.00                          |
+|                                              |
+|  Soybeans (2024-2025 Summer)                 |
+|  Revenue: $1,050.00 (2.1t x $500/t)         |
+|  Costs:   $650.00                            |
+|  Profit:  $400.00                            |
++----------------------------------------------+</code></pre>
+
+        <p>For Gideon's wheat example from earlier, that report would clearly show the thin margin &mdash; and prompt the question: <em>how can I either reduce costs or increase yield?</em></p>
+
+        <p>This is simple stuff. Any accountant would roll their eyes. But for a farmer who's never seen their costs laid out in black and white, it's a revelation. It turns farming from "I plant, I hope, I harvest" into "I invest X, I expect Y, and here's how I can improve."</p>
+
+        <hr>
+
+        <h2>Yield Benchmarking: How Do You Compare?</h2>
+
+        <p>Knowing your own numbers is step one. Step two is knowing how you compare to <strong>everyone else</strong>.</p>
+
+        <p>FarmMonitor's yield benchmarking system compares each farmer's yield-per-hectare against all other farmers growing the same crop. Think of it like a fitness tracker, but for farming:</p>
+
+<pre><code>Your maize yield:     3.3 tonnes/ha
+Average (all farms):  2.8 tonnes/ha
+Top performer:        4.5 tonnes/ha
+Your percentile:      72nd (better than 72% of farmers)</code></pre>
+
+        <p>This tells the farmer three things:</p>
+        <ol>
+          <li><strong>You're doing okay</strong> &mdash; above average</li>
+          <li><strong>There's room to grow</strong> &mdash; the best farmers get 4.5t/ha</li>
+          <li><strong>What do they know that you don't?</strong> &mdash; and this is where the AI steps in with practical tips based on what top performers do differently</li>
+        </ol>
+
+        <p>It's the same principle that makes fitness leaderboards motivating. Nobody wants to be last, and everyone wants to know the "secret" of the top performers. In agriculture, those "secrets" are usually straightforward: timely planting, correct fertilizer application, and early pest management. But knowing you're behind is what motivates action.</p>
+
+        <hr>
+
+        <h2>Risk Scoring: Which Farms Need Help Most?</h2>
+
+        <p>Now let's flip to the extension officer's perspective. You have 400 farmers. You can visit maybe 20 per week. <strong>Which 20 should you visit this week?</strong></p>
+
+        <p>Without data, officers rely on gut feeling, geography, or a rotating schedule. With FarmMonitor, they have <strong>risk scores</strong>.</p>
+
+        <p>Every farm gets a score from 0 to 100, calculated from five factors:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Factor</th>
+              <th>What It Measures</th>
+              <th>Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Visit recency</strong></td>
+              <td>How long since the last visit?</td>
+              <td>No visit in 3 months = high risk</td>
+            </tr>
+            <tr>
+              <td><strong>Overdue recs</strong></td>
+              <td>Are critical tasks being ignored?</td>
+              <td>2 overdue high-priority items = high risk</td>
+            </tr>
+            <tr>
+              <td><strong>Compliance rate</strong></td>
+              <td>Does this farmer follow advice?</td>
+              <td>Only 30% completed = high risk</td>
+            </tr>
+            <tr>
+              <td><strong>Crop stage</strong></td>
+              <td>Is the crop at a critical growth point?</td>
+              <td>Flowering stage = needs attention</td>
+            </tr>
+            <tr>
+              <td><strong>Weather exposure</strong></td>
+              <td>Are extreme conditions expected?</td>
+              <td>Frost warning + no protection = high risk</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>The officer's dashboard sorts farms by risk score, highest first. It's like a triage system in an emergency room &mdash; the most critical cases get attention first:</p>
+
+<pre><code>85  Munashe Mbizi    - 2 overdue tasks, no visit in 6 weeks
+72  Martha Mbudzi    - Armyworm alert, crop at tasselling
+55  Samson Svosve    - 1 overdue task, visit was 4 weeks ago
+41  Nakai Nyuchi     - Crop healthy, minor weather concern
+22  Chamu Chipembere - All clear, visited last week
+15  Byron Bere       - Harvested, off-season</code></pre>
+
+        <p>At a glance, the officer knows: visit Munashe and Martha this week. Samson can wait. The others are fine.</p>
+
+        <hr>
+
+        <h2>Officer Analytics: Are You Making a Difference?</h2>
+
+        <p>Extension officers aren't just farming advisors &mdash; they're also judged on their effectiveness. FarmMonitor provides analytics that answer the question every officer and their supervisor wants to know: <strong>is the advice actually working?</strong></p>
+
+        <p><strong>Recommendation Effectiveness:</strong></p>
+        <ul>
+          <li>How many recommendations were completed vs. ignored?</li>
+          <li>What's the average time from recommendation to completion?</li>
+          <li>Which types of advice get followed, and which get skipped?</li>
+        </ul>
+
+        <p><strong>Crop Performance Trends:</strong></p>
+        <ul>
+          <li>How are yields changing across your farmer portfolio?</li>
+          <li>Are the farmers you visit more frequently performing better?</li>
+          <li>Which crops are underperforming in your region?</li>
+        </ul>
+
+        <p>This data closes the feedback loop. Without it, an officer gives advice and hopes for the best. With it, they can see: <em>"When I recommend fall armyworm treatment, 85% of farmers act on it within a week. But when I recommend soil testing, only 20% follow through. Maybe I need to explain why soil testing matters, or help arrange group testing sessions."</em></p>
+
+        <hr>
+
+        <h2>The Agro-Dealer Directory</h2>
+
+        <p>The final piece of the business puzzle is <strong>supply</strong>. It's one thing to know you need Compound D fertilizer. It's another to know where to buy it, who has stock, and what they charge.</p>
+
+        <p>FarmMonitor includes a directory of local agro-dealers &mdash; the agricultural supply shops that sell seeds, fertilizer, pesticides, and equipment:</p>
+
+<pre><code>Marondera Farm Supplies
+  Location: 15 Main Street, Marondera
+  Phone: +263 79 123 4567
+  Products: Seeds, fertilizers, pesticides, farm tools
+  Region: Mashonaland East
+
+Chiredzi Agro Centre
+  Location: Chiredzi Town, Triangle Road
+  Phone: +263 71 987 6543
+  Products: Sugarcane inputs, general fertilizers, irrigation
+  Region: Manicaland</code></pre>
+
+        <p>It's not an e-commerce platform. It's a simple directory &mdash; like a Yellow Pages for farming supplies. But in rural areas where the nearest agro-dealer might be 30km away, knowing who stocks what (and their phone number) saves time, fuel, and frustration.</p>
+
+        <hr>
+
+        <h2>Weather Integration</h2>
+
+        <p>All the planning in the world means nothing if a freak frost kills your crop or a heat wave wilts your seedlings. FarmMonitor integrates with Open-Meteo (a free weather API) to provide:</p>
+
+        <ol>
+          <li><strong>7-day forecast</strong> &mdash; Temperature, rainfall, humidity, wind</li>
+          <li><strong>Proactive alerts</strong> &mdash; The system analyzes the forecast against each crop's vulnerability</li>
+        </ol>
+
+<pre><code>Frost Warning: Temperature expected to drop to 2C tonight.
+Your maize at seedling stage is vulnerable to frost damage.
+
+Recommended action:
+- Cover seedlings with dry grass mulch this evening
+- Irrigate lightly before sunset (wet soil retains warmth)
+- Avoid fertilizer application until temperatures recover</code></pre>
+
+        <p>These alerts go out through all three channels &mdash; web, Telegram, and SMS &mdash; because a weather warning is useless if it arrives after the frost.</p>
+
+        <hr>
+
+        <h2>A Complete Farming Season</h2>
+
+        <p>Let's follow Munashe through an entire season to see how all these features connect:</p>
+
+        <p><strong>October (Pre-planting):</strong></p>
+        <ul>
+          <li>Officer John visits and records observations: soil looks dry, recommends waiting for first rains</li>
+          <li>Munashe gets a Telegram message with the summary</li>
+          <li>FarmMonitor's weather forecast shows rain expected in 2 weeks</li>
+          <li>Munashe records his seed purchase: SC513 maize, $45 for a 10kg bag</li>
+        </ul>
+
+        <p><strong>November (Planting):</strong></p>
+        <ul>
+          <li>Rain arrives. Munashe plants and records it in the app</li>
+          <li>He buys Compound D fertilizer ($240) and records the input</li>
+          <li>AI chat reminds him about planting depth and spacing for SC513</li>
+        </ul>
+
+        <p><strong>December (Growing):</strong></p>
+        <ul>
+          <li>Officer visits again. Spots early armyworm damage</li>
+          <li>AI generates recommendations: spray within 48 hours</li>
+          <li>Munashe gets Telegram notification + SMS</li>
+          <li>He buys Ampligo pesticide ($35) &mdash; recorded as an input</li>
+          <li>Risk score drops from 75 to 30 after treatment</li>
+        </ul>
+
+        <p><strong>January (Critical growth):</strong></p>
+        <ul>
+          <li>Weather alert: heat wave expected. AI advises irrigation timing</li>
+          <li>Munashe applies AN top-dressing ($210) &mdash; recorded</li>
+          <li>Yield benchmark shows he's tracking at 75th percentile &mdash; above average</li>
+        </ul>
+
+        <p><strong>March (Harvest):</strong></p>
+        <ul>
+          <li>Munashe harvests 10 tonnes of maize</li>
+          <li>Records selling price: $250/tonne ($2,500 total revenue)</li>
+          <li>Profit/loss report shows: Revenue $2,500 &mdash; Costs $1,240 = <strong>Profit $1,260</strong></li>
+        </ul>
+
+        <p><strong>April (Review):</strong></p>
+        <ul>
+          <li>Officer checks analytics: Munashe followed 90% of recommendations</li>
+          <li>Yield: 3.3t/ha &mdash; up from 2.8t/ha last season</li>
+          <li>Risk score: 12 (low &mdash; all done for the season)</li>
+        </ul>
+
+        <p>That's the complete loop. From planting decision to profit calculation, every step is tracked, advised, and measured.</p>
+
+        <hr>
+
+        <h2>Why This Matters Beyond Zimbabwe</h2>
+
+        <p>The problems FarmMonitor addresses aren't unique to Zimbabwe. Across sub-Saharan Africa, South Asia, and Latin America, the same pattern repeats:</p>
+
+        <ul>
+          <li>Extension services are stretched thin</li>
+          <li>Farmers lack access to timely, personalized advice</li>
+          <li>Record-keeping is minimal, so decision-making is gut-based</li>
+          <li>Communication channels are unreliable</li>
+        </ul>
+
+        <p>The architecture is deliberately simple and portable:</p>
+
+        <ul>
+          <li><strong>SQLite</strong> instead of PostgreSQL &mdash; no database server to maintain</li>
+          <li><strong>Free APIs</strong> for weather (Open-Meteo) and communication (Telegram)</li>
+          <li><strong>Low-bandwidth channels</strong> (SMS, Telegram) alongside web</li>
+          <li><strong>Multilingual AI</strong> that can adapt to any language Claude supports</li>
+        </ul>
+
+        <p>Swap the crop types, the local languages, and the agro-dealer names, and this same system could serve rice farmers in Bangladesh, coffee growers in Ethiopia, or quinoa farmers in Bolivia.</p>
+
+        <hr>
+
+        <h2>The Bottom Line</h2>
+
+        <p>FarmMonitor started as a question: <em>What if we treated farm visits like medical visits &mdash; and gave farmers the same post-visit support that patients get?</em></p>
+
+        <p>The answer turned out to be a platform that does much more than post-visit follow-up. It's become a <strong>complete farming intelligence layer</strong> &mdash; advisory, communication, financial tracking, risk management, and analytics &mdash; all accessible from a web browser, a Telegram chat, or a simple text message.</p>
+
+        <p>It doesn't replace the human extension officer. It makes them superhuman.</p>
+
+        <p>And for the farmer standing in a field with a phone in one hand and a sick crop in the other, it means the answer is never more than a message away.</p>
+
+        <hr>
+
+        <h2>Series Recap</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Part</th>
+              <th>Title</th>
+              <th>What It Covers</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><a href="part1-the-problem.html">Part 1</a></td>
+              <td>The Problem Nobody Talks About</td>
+              <td>Why farmers forget advice, the postvisit.ai parallel, project vision</td>
+            </tr>
+            <tr>
+              <td><a href="part2-the-ai-brain.html">Part 2</a></td>
+              <td>Teaching AI to Speak Farmer</td>
+              <td>AI chat, photo diagnosis, smart recommendations, multilingual support</td>
+            </tr>
+            <tr>
+              <td><a href="part3-reaching-every-farmer.html">Part 3</a></td>
+              <td>Reaching Every Farmer</td>
+              <td>Telegram bots, SMS fallback, three-channel notification strategy</td>
+            </tr>
+            <tr>
+              <td><a href="part4-the-business-of-farming.html">Part 4</a></td>
+              <td>The Business of Farming</td>
+              <td>Cost tracking, profit/loss, yield benchmarks, risk scores, analytics</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <hr>
+
+        <h2>Tech Stack</h2>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Component</th>
+              <th>Technology</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td>Frontend</td><td>React 18 + TypeScript + Tailwind CSS + Vite</td></tr>
+            <tr><td>Backend</td><td>Node.js + Express + TypeScript</td></tr>
+            <tr><td>Database</td><td>SQLite + Prisma ORM (12 models)</td></tr>
+            <tr><td>AI</td><td>Claude (Anthropic)</td></tr>
+            <tr><td>Telegram</td><td>node-telegram-bot-api</td></tr>
+            <tr><td>SMS</td><td>Africa's Talking</td></tr>
+            <tr><td>Weather</td><td>Open-Meteo (free)</td></tr>
+          </tbody>
+        </table>
+
+        <p><em>FarmMonitor is an open-source project. The complete codebase and documentation are available on <a href="https://github.com/munyaradzi-zhou/FarmMonitor">GitHub</a>.</em></p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part3-reaching-every-farmer.html">&larr; Part 3: Reaching Every Farmer</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

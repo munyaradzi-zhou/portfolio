@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How 7 Azure Services Talk to Each Other (Part 2) — Multimodal AI Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>How 7 Azure Services Talk to Each Other</h1>
+        <p class="meta">Multimodal AI Assistant Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series. In <a href="part1-what-if-your-ai-could-see-hear-and-read.html">Part 1</a>, we introduced the multimodal AI assistant and what it can do. Now let's talk about how it does it. <a href="part3-from-zero-to-seven-services.html">Part 3</a> covers the implementation and lessons learned.</em></p>
+
+        <hr>
+
+        <h2>The Big Picture: A Restaurant Kitchen</h2>
+
+        <p>Think of our system like a restaurant kitchen. The customer (user) places an order at the front counter (Streamlit dashboard). The order goes to the kitchen (FastAPI backend), where different chefs (Azure services) each do their part:</p>
+
+        <ul>
+          <li>The <strong>Vision Chef</strong> examines what's on the plate (analyzes images)</li>
+          <li>The <strong>Speech Chef</strong> takes verbal orders and reads them back (transcribes and synthesizes audio)</li>
+          <li>The <strong>Language Chef</strong> reads written notes and highlights the important parts (entity extraction, sentiment)</li>
+          <li>The <strong>Safety Inspector</strong> checks every ingredient coming in and every dish going out (content moderation)</li>
+          <li>The <strong>Head Chef (GPT-4o)</strong> combines everyone's work and adds the creative touch (multimodal reasoning)</li>
+          <li>The <strong>Filing Clerk</strong> saves photos of every dish (Blob Storage)</li>
+          <li>The <strong>Bookkeeper</strong> records every order in the ledger (Cosmos DB)</li>
+        </ul>
+
+        <p>No single chef does everything. But together, they produce something none of them could alone.</p>
+
+        <hr>
+
+        <h2>Tracing a Real Request: "What Color Are the Tree Leaves?"</h2>
+
+        <p>Let's follow a real request from our live test. A user uploaded a photo of an autumn tree and asked: <em>"What color are the tree leaves?"</em></p>
+
+<pre><code>STEP 1:  User clicks "Ask GPT-4o" in the Vision tab
+         &rarr; Browser sends image file + question text to the API
+
+STEP 2:  API receives the request at POST /vision/ask
+         &rarr; Reads the image bytes (87,432 bytes of JPEG data)
+         &rarr; Reads the question: "what color are the tree leaves?"
+
+STEP 3:  Content Safety checks the IMAGE
+         &rarr; Response: {Hate: 0, SelfHarm: 0, Sexual: 0, Violence: 0}
+         &rarr; is_safe = true ✓
+
+STEP 4:  Content Safety checks the QUESTION TEXT
+         &rarr; Response: all zeros, is_safe = true ✓
+
+STEP 5:  GPT-4o analyzes the image + question
+         &rarr; Image bytes converted to base64 string
+         &rarr; Sent to GPT-4o with both the image and question
+         &rarr; Answer: "The tree leaves are primarily shades of red, orange,
+           and yellow, reflecting the vibrant colors typically seen
+           during autumn."
+
+STEP 6:  Content Safety checks GPT-4o's ANSWER
+         &rarr; Response: all zeros, is_safe = true ✓
+
+STEP 7:  Blob Storage saves the image
+         &rarr; Filename: "f67c8117_pexels-pixabay-33109.jpg"
+
+STEP 8:  Cosmos DB saves the analysis record
+
+STEP 9:  API returns the response to the browser
+
+STEP 10: Streamlit renders the Q&amp;A card with safety badge</code></pre>
+
+        <p><strong>Services involved in this single request: 4</strong> (Content Safety &times;3 calls, GPT-4o, Blob Storage, Cosmos DB)</p>
+
+        <p><strong>Total time:</strong> About 5&ndash;10 seconds, most of which is GPT-4o thinking.</p>
+
+        <p>Notice that Content Safety was called <strong>three times</strong> &mdash; once for the image, once for the question, and once for the answer. This is "defense in depth." We don't trust that the input is safe just because it looks harmless. And we don't trust that the AI's output is safe just because the input was safe. We check everything, every time.</p>
+
+        <hr>
+
+        <h2>The Speech Puzzle: No Microphone in a Docker Container</h2>
+
+        <p>Here's a problem that's easy to overlook: our application runs inside Docker containers. A Docker container is like a lightweight virtual computer &mdash; it has a file system, it can run programs, but it <strong>doesn't have hardware</strong> like a microphone or speakers.</p>
+
+        <p>The answer is <strong>file-based I/O</strong>. Instead of listening through a microphone, the Speech SDK reads from a file. Instead of playing through a speaker, it writes to a file.</p>
+
+        <h3>Speech-to-Text</h3>
+        <ol>
+          <li>User uploads an audio file (say, a 20-second WAV recording)</li>
+          <li>The API receives the raw bytes</li>
+          <li>We write those bytes to a temporary file on disk</li>
+          <li>We tell the Speech SDK: "Read from this file instead of a microphone"</li>
+          <li>The SDK transcribes the audio</li>
+          <li>We delete the temp file and return the text</li>
+        </ol>
+
+        <h3>Text-to-Speech</h3>
+        <ol>
+          <li>User types some text and picks a voice</li>
+          <li>We tell the Speech SDK: "Write to this file instead of playing through a speaker"</li>
+          <li>The SDK generates audio and saves it as a WAV file</li>
+          <li>We read the bytes, delete the temp file, and send audio back to the browser</li>
+          <li>The browser plays it using its own audio capabilities</li>
+        </ol>
+
+        <p>It's a workaround, but it's a clean one. The user never knows the difference.</p>
+
+        <hr>
+
+        <h2>Why the Speech SDK Is the Odd One Out</h2>
+
+        <p>Every Azure AI service follows the same authentication pattern &mdash; you give it an <strong>endpoint URL</strong> and an <strong>API key</strong>:</p>
+
+<pre><code>Vision:         endpoint = "https://my-vision.cognitiveservices.azure.com/"
+Language:       endpoint = "https://my-language.cognitiveservices.azure.com/"
+Content Safety: endpoint = "https://my-safety.cognitiveservices.azure.com/"
+OpenAI:         endpoint = "https://my-openai.openai.azure.com/"</code></pre>
+
+        <p>Then there's the Speech SDK:</p>
+
+<pre><code>Speech:         region = "eastus"    &larr; Wait, what?</code></pre>
+
+        <p>No endpoint URL. Just a region string like "eastus" or "westus2." The Speech SDK takes that region, constructs the endpoint URL internally, and connects. This is because the Speech SDK ships as a native C/C++ library (not pure Python like the others), and it has its own way of handling connections.</p>
+
+        <p>This trips up almost everyone the first time. You copy the endpoint URL from the Azure portal and try to use it &mdash; and nothing works. The fix: use just the region name, not the full URL. We spent more time debugging this one line of configuration than any other part of the project.</p>
+
+        <hr>
+
+        <h2>The Multimodal Endpoint: 6 Services in One Call</h2>
+
+        <p>The most impressive endpoint is <code>POST /multimodal/analyze</code>. Upload an image, optionally type a question, and the system orchestrates <strong>6 out of 7 Azure services</strong> in a single request:</p>
+
+<pre><code>User uploads: photo + "what tie is the person wearing?"
+                    |
+                    v
+        +-------------------------+
+        |   Content Safety        |  Check 1: Is the image safe?
+        |   (Image Moderation)    |  &rarr; {Hate: 0, Violence: 0, ...} ✓
+        +------------+------------+
+                     |
+                     v
+        +-------------------------+
+        |   Content Safety        |  Check 2: Is the text safe?
+        |   (Text Moderation)     |  &rarr; {all zeros} ✓
+        +------------+------------+
+                     |
+                     v
+        +-------------------------+
+        |   Blob Storage          |  Save the image for later
+        +------------+------------+
+                     |
+                     v
+        +-------------------------+
+        |   GPT-4o                |  Look at the image + read the question
+        |   (Visual Reasoning)    |  &rarr; "The person is wearing a solid black tie."
+        +------------+------------+
+                     |
+                     v
+        +-------------------------+
+        |   Azure AI Vision       |  Analyze the image structurally
+        |   (5 Visual Features)   |  &rarr; caption, tags, objects, OCR
+        +------------+------------+
+                     |
+                     v
+        +-------------------------+
+        |   Azure AI Language     |  Analyze the GPT-4o description
+        |   (5 NLP Features)      |  &rarr; entities, sentiment, key phrases
+        +------------+------------+
+                     |
+                     v
+        +-------------------------+
+        |   Cosmos DB             |  Save everything to the database
+        +-------------------------+</code></pre>
+
+        <p>That's <strong>8 API calls to 6 different services</strong>, all orchestrated by about 50 lines of Python code.</p>
+
+        <hr>
+
+        <h2>How Images Get Sent to GPT-4o</h2>
+
+        <p>GPT-4o is a text-based API &mdash; you send it messages as JSON text. So how do you send it an image?</p>
+
+        <p>The answer is <strong>base64 encoding</strong>. Base64 is a way to represent binary data (like the bytes of a JPEG file) as plain text characters:</p>
+
+        <ol>
+          <li>You have an image file: 87,432 bytes of JPEG data</li>
+          <li>You convert it to base64: a text string of about 116,576 characters</li>
+          <li>You wrap it in a data URL: <code>data:image/jpeg;base64,/9j/4AAQ...</code></li>
+          <li>You include that string in the API message alongside your question</li>
+        </ol>
+
+        <p>The base64 encoding makes the message about <strong>33% larger</strong> than the original image, but it means you can send images through a text-only API without any special image upload protocol.</p>
+
+        <hr>
+
+        <h2>The Database Decision That Saved Us Hours</h2>
+
+        <p>Azure Cosmos DB requires you to choose a "partition key" &mdash; a field in your data that determines how the database organizes documents internally.</p>
+
+        <p>In an earlier project, we chose the document <em>type</em> as the partition key. That seemed logical: all invoices go in one partition, all contracts in another. But when a document got re-classified during processing, it effectively needed to move between partitions, which Cosmos DB doesn't allow.</p>
+
+        <p>For this project, we chose the document <strong>ID</strong> as the partition key. Every document gets a unique ID when it's created, and that ID never changes. This is one of those decisions that sounds trivial but saves you from bizarre bugs at 2 AM.</p>
+
+        <hr>
+
+        <h2>Content Safety: Why We Check Everything Twice</h2>
+
+        <p>You might wonder why we run Content Safety checks on both inputs <em>and</em> outputs. If the input is safe, won't the output be safe too?</p>
+
+        <p>Not necessarily:</p>
+
+        <ul>
+          <li><strong>Safe input, unsafe output:</strong> A user uploads a perfectly innocent landscape photo. But due to a quirk in GPT-4o's training, it generates a description that includes inappropriate content.</li>
+          <li><strong>Unsafe input that bypasses text checks:</strong> A user uploads an image that contains harmful content. Text-based moderation can't catch this &mdash; you need image-specific moderation.</li>
+        </ul>
+
+        <p>So we check every uploaded image, every piece of user text, and every AI-generated response. If anything fails, we flag it with a red "Flagged" badge instead of a green "Safe" badge.</p>
+
+        <hr>
+
+        <h2>The Sentiment Surprise</h2>
+
+        <p>One of our live tests produced an unexpected result. We analyzed a student campaign speech &mdash; an upbeat, motivational text about organizing fundraisers and gathering signatures. You'd expect positive sentiment, right?</p>
+
+        <p>The Language service scored it as <strong>"mixed"</strong> &mdash; 31% positive, 18% neutral, and <strong>50% negative</strong>.</p>
+
+        <p>Why? Because the speech contains phrases like "budget cuts," "didn't just complain," "created chaos," and "I didn't just wait." These are negative constructions, even though the <em>intent</em> is positive.</p>
+
+        <p><strong>Lesson:</strong> Sentiment analysis measures the emotional tone of the words, not the intent of the speaker. A speech that says "we overcame terrible challenges" will score as partly negative because of "terrible challenges," even though the overall message is triumphant.</p>
+
+        <hr>
+
+        <h2>PII Detection: The Invisible Shield</h2>
+
+        <p>Our Language service automatically detects PII (Personally Identifiable Information) and can redact it:</p>
+
+        <p><strong>Original:</strong><br>
+        "Good morning, Riverside High! I'm Sarah Martinez, and I'm running for student body president."</p>
+
+        <p><strong>Redacted:</strong><br>
+        "Good morning, **************! I'm **************, and I'm running for ************ *********."</p>
+
+        <p>This is incredibly useful for any application that handles user data &mdash; customer service logs, healthcare records, or any system that needs to anonymize personal details automatically.</p>
+
+        <p>In <a href="part3-from-zero-to-seven-services.html">Part 3</a>, we'll switch from "how it works" to "how we built it" &mdash; the project structure, the code patterns, the Docker setup, and the lessons learned.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-what-if-your-ai-could-see-hear-and-read.html">&larr; Part 1: What If Your AI Could See, Hear, and Read?</a>
+        <a href="part3-from-zero-to-seven-services.html">Part 3: From Zero to Seven Services &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

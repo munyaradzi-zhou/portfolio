@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Query Pipeline: Hybrid Retrieval and Reranking (Part 2) — RAG Intelligence Blog — Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>The Query Pipeline: Hybrid Retrieval, Cross-Encoder Reranking, and Cited Answers</h1>
+        <p class="meta">RAG Document Intelligence Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series. In <a href="part1-ingestion-pipeline.html">Part 1</a>, we parsed documents, split them into sentence-window chunks, embedded them with Azure OpenAI, and stored them in Qdrant. Now comes the hard part: turning a natural-language question into an accurate, cited answer.</em></p>
+
+        <hr>
+
+        <p>This is where most RAG systems fall flat &mdash; not because the LLM is bad, but because the retrieval is mediocre. If you feed the LLM the wrong chunks, it will confidently generate a wrong answer.</p>
+
+        <p>The query pipeline has three stages, and each one exists because the previous one isn't good enough on its own.</p>
+
+<pre><code>User Question
+     |
+     v
+[ Hybrid Retriever ] --&gt; 20 candidates (dense + BM25 scoring)
+     |
+     v
+[ Cross-Encoder Reranker ] --&gt; 5 candidates (precision-refined)
+     |
+     v
+[ LLM Generator ] --&gt; Answer with [Doc: filename, Page: N] citations</code></pre>
+
+        <hr>
+
+        <h2>Stage 1: Hybrid Retrieval &mdash; Why Dense Search Alone Isn't Enough</h2>
+
+        <p>The obvious approach: embed the question, find the nearest vectors in Qdrant, done. This is pure dense retrieval, and it works well for semantic queries like "What's the policy on working from home?" matching a chunk about "remote work."</p>
+
+        <p>But it fails on precise queries. Ask "What's the minimum internet speed for remote work?" and you need the chunk containing "50 Mbps." Dense embeddings are notoriously bad at encoding specific numbers, acronyms, and technical terms.</p>
+
+        <p>That's why I combine <strong>dense retrieval</strong> (semantic) with <strong>BM25 scoring</strong> (keyword):</p>
+
+<pre><code class="language-python">def hybrid_search(question: str, top_n: int = 20, dense_weight: float = 0.7):
+    # Phase 1: Dense retrieval from Qdrant
+    dense_results = _dense_search(question, qdrant, top_n=top_n)
+
+    # Phase 2: BM25 keyword scoring on the retrieved candidates
+    candidates = _bm25_rerank(question, dense_results)
+
+    # Phase 3: Normalize and combine
+    for c in candidates:
+        norm_dense = (c["dense_score"] - min_dense) / dense_range
+        norm_bm25 = (c["bm25_score"] - min_bm25) / bm25_range
+        c["score"] = 0.7 * norm_dense + 0.3 * norm_bm25
+
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    return candidates[:top_n]</code></pre>
+
+        <h3>How Each Phase Works</h3>
+
+        <p><strong>Dense search</strong> embeds the question into the same 3072-dimensional space as the chunks, then finds the 20 nearest vectors by cosine similarity.</p>
+
+        <p><strong>BM25 scoring</strong> is a classical information retrieval algorithm. It tokenizes both the question and each candidate's text, then scores based on term frequency, inverse document frequency, and document length normalization.</p>
+
+        <p><strong>Hybrid fusion</strong> normalizes both scores to [0, 1] and combines them:</p>
+
+<pre><code>hybrid_score = 0.7 x normalize(dense_score) + 0.3 x normalize(bm25_score)</code></pre>
+
+        <p>The 0.7/0.3 weighting favors semantic understanding but gives keyword matches a meaningful voice.</p>
+
+        <h3>Why 0.7/0.3?</h3>
+
+        <table>
+          <thead>
+            <tr><th>Dense Weight</th><th>BM25 Weight</th><th>Observation</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>1.0</td><td>0.0</td><td>Misses exact-term matches ("50 Mbps", "Tier 3")</td></tr>
+            <tr><td>0.5</td><td>0.5</td><td>Over-weights keyword matches; semantic quality drops</td></tr>
+            <tr><td>0.7</td><td>0.3</td><td>Best balance &mdash; semantic-first with keyword boost</td></tr>
+            <tr><td>0.0</td><td>1.0</td><td>Pure keyword; misses paraphrased content entirely</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Real Output</h3>
+
+        <p><strong>Question:</strong> "How many days per week can employees work remotely?"</p>
+
+<pre><code class="language-python">[
+    {
+        "text": "Acme Corp allows all full-time employees to work remotely up to 3 days per week.",
+        "dense_score": 0.7823,
+        "bm25_score": 4.231,
+        "score": 0.8819   # hybrid
+    },
+    {
+        "text": "Remote work days must be scheduled in advance through the HR portal...",
+        "score": 0.7234
+    },
+    {
+        "text": "Employees in their first 90 days are required to work on-site 5 days per week.",
+        "score": 0.7102
+    }
+]</code></pre>
+
+        <p><strong>Latency:</strong> 457ms total (dominated by the embedding API call for the question).</p>
+
+        <hr>
+
+        <h2>Stage 2: Cross-Encoder Reranking &mdash; Why 20 Candidates Become 5</h2>
+
+        <p>Hybrid search gave us 20 candidates sorted by a combined score. But this score is still approximate &mdash; the dense embedding encodes query and passage <em>independently</em> (bi-encoder), and BM25 is pure keyword overlap. Neither truly understands whether a passage <em>answers</em> the question.</p>
+
+        <p>Enter the cross-encoder. Unlike bi-encoders that encode query and passage separately, a cross-encoder processes the (query, passage) pair <em>jointly</em> through a transformer.</p>
+
+<pre><code class="language-python">from sentence_transformers import CrossEncoder
+
+_model: CrossEncoder | None = None  # Lazy-loaded singleton
+
+def rerank(question: str, candidates: list[dict], top_k: int = 5):
+    model = _get_model()
+    pairs = [(question, c["text"]) for c in candidates]
+    scores = model.predict(pairs)
+
+    for candidate, score in zip(candidates, scores):
+        candidate["rerank_score"] = float(score)
+
+    candidates.sort(key=lambda c: c["rerank_score"], reverse=True)
+    return candidates[:top_k]</code></pre>
+
+        <h3>The Architecture Difference</h3>
+
+<pre><code>Bi-Encoder (used in retrieval):
+  "How many days remote?" -&gt; [0.12, -0.45, ...]  --+
+                                                      +-- cosine = 0.78
+  "...remotely up to 3 days per week" -&gt; [0.15, -0.42, ...]  --+
+  Fast (one embedding per text) but approximate.
+
+Cross-Encoder (used in reranking):
+  ["How many days remote?", "...remotely up to 3 days per week"]
+                    |
+              Joint transformer encoding
+                    |
+              Relevance score: 9.14
+  Slow (one forward pass per pair) but precise.</code></pre>
+
+        <p>The model (<code>ms-marco-MiniLM-L-6-v2</code>, 22M parameters) is small enough to run on CPU but powerful enough to meaningfully reorder the candidates.</p>
+
+        <h3>Real Output</h3>
+
+<pre><code class="language-python">[
+    {"text": "...remotely up to 3 days per week.",     "rerank_score": 9.14},
+    {"text": "Remote work days must be scheduled...",  "rerank_score": 5.23},
+    {"text": "...first 90 days...work on-site 5 days", "rerank_score": 4.87},
+    {"text": "...core hours from 10:00 AM to 3:00 PM", "rerank_score": 2.15},
+    {"text": "...stable internet of at least 50 Mbps", "rerank_score": 1.92},
+]</code></pre>
+
+        <h3>The Cold Start Problem</h3>
+
+        <p>The first time the model loads: <strong>11.1 seconds</strong>. Every subsequent call: <strong>1.7 seconds</strong>. In production, you'd preload the model during API startup.</p>
+
+        <hr>
+
+        <h2>Stage 3: LLM Generation &mdash; Turning Chunks into Cited Answers</h2>
+
+        <p>The final stage takes the 5 best chunks and asks the LLM to synthesize an answer with source citations.</p>
+
+        <h3>The System Prompt</h3>
+
+        <p>This is the most important prompt in the entire system. It enforces three behaviors:</p>
+
+<pre><code class="language-python">SYSTEM_PROMPT = """\
+You are a precise document Q&amp;A assistant. Answer the user's question using ONLY \
+the retrieved context below. For every factual claim, cite the source as \
+[Doc: &lt;filename&gt;, Page: &lt;page&gt;]. If the context does not contain enough \
+information to answer, say "I don't have enough information in the indexed \
+documents to answer this question." Never fabricate information."""</code></pre>
+
+        <ol>
+          <li><strong>ONLY the retrieved context</strong> &mdash; prevents hallucination from parametric knowledge</li>
+          <li><strong>Cite every claim</strong> &mdash; forces traceability to source documents</li>
+          <li><strong>Admit ignorance</strong> &mdash; better to say "I don't know" than fabricate</li>
+        </ol>
+
+        <h3>Real Output</h3>
+
+<pre><code>"Employees can work remotely up to 3 days per week
+[Doc: company_policy.txt, Page: 1]. However, employees
+in their first 90 days (probation period) are required
+to work on-site 5 days per week
+[Doc: company_policy.txt, Page: 1]."</code></pre>
+
+        <p>The model cites both the general policy and the exception. Both citations reference the correct document and page. This is what grounded generation looks like.</p>
+
+        <p><strong>Latency:</strong> 8,751ms (including ~64 reasoning tokens + ~52 output tokens).</p>
+
+        <hr>
+
+        <h2>The Full Query Pipeline in Numbers</h2>
+
+        <table>
+          <thead>
+            <tr><th>Stage</th><th>Latency</th><th>Output</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Embed question</td><td>300ms</td><td>3072-dim vector</td></tr>
+            <tr><td>Qdrant cosine search</td><td>10ms</td><td>20 candidates</td></tr>
+            <tr><td>BM25 re-scoring</td><td>2ms</td><td>20 candidates + bm25_score</td></tr>
+            <tr><td>Hybrid score fusion</td><td>1ms</td><td>20 candidates sorted</td></tr>
+            <tr><td>Cross-encoder reranking</td><td>1,730ms</td><td>5 candidates</td></tr>
+            <tr><td>Context construction</td><td>&lt;1ms</td><td>Formatted prompt</td></tr>
+            <tr><td>LLM generation</td><td>8,751ms</td><td>Cited answer</td></tr>
+            <tr><td><strong>Total (warm)</strong></td><td><strong>~11.3s</strong></td><td></td></tr>
+            <tr><td><strong>Total (cold)</strong></td><td><strong>~20.7s</strong></td><td>Includes 11s reranker startup</td></tr>
+          </tbody>
+        </table>
+
+        <p>The bottleneck is clear: <strong>77% of warm latency is the LLM call.</strong> The retrieval pipeline (embedding + search + BM25 + rerank) takes 2s total.</p>
+
+        <hr>
+
+        <h2>Streaming: Perceived Latency vs. Actual Latency</h2>
+
+        <p>The system includes a streaming endpoint that delivers tokens as they arrive via Server-Sent Events:</p>
+
+<pre><code class="language-python">@router.post("/stream")
+async def query_documents_stream(req: QueryRequest):
+    async def event_stream():
+        candidates = hybrid_search(req.question, top_n=20)
+        top_chunks = rerank(req.question, candidates, top_k=req.top_k)
+
+        async for token in generate_answer_stream(req.question, top_chunks):
+            yield f"data: {token}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")</code></pre>
+
+        <p>With streaming, the user sees the first word in ~2s (retrieval + reranking) instead of waiting 11s for the complete answer. Total time is the same, but perceived latency drops dramatically.</p>
+
+        <hr>
+
+        <h2>The Observability Layer</h2>
+
+        <p>Every query is traced via LangFuse, and the <code>trace_id</code> is returned to the frontend. Users can give thumbs up/down on answers, linked directly to the trace that produced them. This closes the loop for evaluation and improvement.</p>
+
+        <p>In <a href="part3-architectural-decisions.html">Part 3</a>, we'll step back and examine the architectural decisions &mdash; why these specific tools, what tradeoffs were made, and what we'd change for production scale.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-ingestion-pipeline.html">&larr; Part 1: The Ingestion Pipeline</a>
+        <a href="part3-architectural-decisions.html">Part 3: Architectural Decisions &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

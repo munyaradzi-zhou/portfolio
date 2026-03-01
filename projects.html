@@ -28,8 +28,9 @@
   <main class="container">
     <h1 class="section-title">Projects</h1>
     <p style="color: var(--color-text-light); margin-bottom: var(--space-2xl); max-width: 700px;">
-      Three systems that demonstrate end-to-end capability across the conversational AI &times; agriculture stack:
-      streaming analytics, knowledge retrieval, and robot task planning.
+      Five systems demonstrating end-to-end capability in conversational AI: three focused on agriculture
+      (streaming analytics, knowledge retrieval, robot planning), one on customer intelligence with explainable AI,
+      and one on temporal knowledge graphs for football analytics with multi-agent orchestration.
     </p>
 
     <div class="card-grid">
@@ -197,6 +198,122 @@
           <a href="https://github.com/munyaradzi-zhou/cropcommand" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
           &nbsp;&nbsp;
           <a href="blog/cropcommand/part1-nl-to-plans.html" style="font-weight: 500;">Read blog series &rarr;</a>
+        </div>
+      </div>
+
+      <!-- Football Agentic RAG -->
+      <div class="card" id="football-rag">
+        <h3>Football Agentic RAG System</h3>
+        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
+          Multi-Agent Temporal Knowledge Graphs for Sports Analytics
+        </p>
+        <p>
+          An AI-powered football analytics system that combines temporal knowledge graphs,
+          multi-agent orchestration, and RAG for intelligent question answering over 32 seasons
+          (1993-2025) of European football data. Users ask natural language questions like
+          "Who was Manchester United's top scorer in 2023?" and receive accurate answers with
+          visualizations, sourced from knowledge graphs, structured databases, and vector stores.
+        </p>
+        <p>
+          The system features an orchestrator agent that routes queries to specialized sub-agents:
+          temporal normalization for date parsing, knowledge graph queries for relationship traversal,
+          stats aggregation for numerical analysis, explanation RAG for contextual insights, and
+          visualization generation for chart specs. Includes comprehensive provenance tracking,
+          caching, and multi-turn conversation support.
+        </p>
+
+        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>Multi-agent orchestration with 6 specialized agents (orchestrator, temporal normalizer, router, KG query, stats, RAG, visualization)</li>
+          <li>Temporal knowledge graph (Neo4j) with 32 seasons of football data</li>
+          <li>Hybrid retrieval: graph traversal + vector search (Chroma) + SQL aggregation (PostgreSQL)</li>
+          <li>Multi-turn conversation with context tracking (teams, players, competitions, seasons)</li>
+          <li>Provenance tracking and anti-hallucination verification for reliable answers</li>
+          <li>FastAPI backend with Streamlit conversational interface</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Technical Contributions</h4>
+        <p style="font-style: italic;">
+          Demonstrates advanced agentic AI patterns: query routing, temporal reasoning, hybrid retrieval,
+          session management, and human-in-the-loop conversation — applicable to conversational systems
+          across domains (agriculture, healthcare, finance) requiring multi-source data integration.
+        </p>
+
+        <div class="tags" style="margin-top: var(--space-lg);">
+          <span class="tag tag--accent">Multi-Agent Systems</span>
+          <span class="tag">Python</span>
+          <span class="tag">Neo4j</span>
+          <span class="tag">PostgreSQL</span>
+          <span class="tag">Chroma</span>
+          <span class="tag">Redis</span>
+          <span class="tag">RAG</span>
+          <span class="tag">LLMs</span>
+          <span class="tag">FastAPI</span>
+          <span class="tag">Streamlit</span>
+          <span class="tag">Provenance Tracking</span>
+        </div>
+
+        <div style="margin-top: var(--space-lg);">
+          <a href="https://github.com/munyaradzi-zhou/football-agentic-rag" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
+        </div>
+      </div>
+
+      <!-- ChurnSense -->
+      <div class="card" id="churnsense">
+        <h3>ChurnSense</h3>
+        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
+          Conversational AI for Customer Intelligence & Retention
+        </p>
+        <p>
+          A production-grade conversational AI system for customer churn prediction, analytics, and retention strategy.
+          Business users ask questions like "Show me high-risk customers", "Why is customer 10025 at risk?",
+          or "Give me retention strategies for premium customers" and receive intelligent answers with automatic
+          visualizations and explainable insights.
+        </p>
+        <p>
+          Features a multi-agent orchestration architecture with 6 specialized AI agents: Orchestrator for coordination,
+          Query Router for intent classification, ML Prediction Agent (99.9% accuracy), Churn Analytics Agent for
+          segment analysis, Explainability Agent with SHAP-based feature importance and natural language generation,
+          and Visualization Agent for auto chart type detection.
+        </p>
+
+        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>Multi-agent orchestration with 6 specialized AI agents</li>
+          <li>LLM-powered intent classification and query enrichment (OpenAI)</li>
+          <li>Multi-turn dialogue with context tracking and pronoun resolution</li>
+          <li>SHAP-based explainability + natural language generation</li>
+          <li>Random Forest ML model with 99.9% prediction accuracy</li>
+          <li>Auto-detecting visualization agent (6 chart types)</li>
+          <li>Streamlit conversational interface + legacy Flask API</li>
+          <li>Redis session management for distributed conversations</li>
+          <li>Docker containerization with Prometheus monitoring</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
+        <p style="font-style: italic;">
+          Demonstrates conversational AI for real-time monitoring and decision support—directly transferable
+          to agricultural robot monitoring and farmer interaction patterns in Position-L.
+        </p>
+
+        <div class="tags" style="margin-top: var(--space-lg);">
+          <span class="tag tag--accent">Conversational AI</span>
+          <span class="tag">Python</span>
+          <span class="tag">Multi-Agent Systems</span>
+          <span class="tag">LLMs (OpenAI)</span>
+          <span class="tag">Explainable AI</span>
+          <span class="tag">SHAP</span>
+          <span class="tag">Machine Learning</span>
+          <span class="tag">Streamlit</span>
+          <span class="tag">FastAPI</span>
+          <span class="tag">Redis</span>
+          <span class="tag">Docker</span>
+        </div>
+
+        <div style="margin-top: var(--space-lg);">
+          <a href="https://github.com/munyaradzi-zhou/churnsense" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
+          &nbsp;&nbsp;
+          <a href="blog/churnsense/part1-building-the-machine-learning-model.html" style="font-weight: 500;">Read blog series &rarr;</a>
         </div>
       </div>
 
