@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Building the Ingestion Pipeline (Part 2) &mdash; Azure Native Search Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Building the Ingestion Pipeline &mdash; From Upload to Searchable Index</h1>
+        <p class="meta">Azure Native Search Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series. In <a href="part1-architecture.html">Part 1</a>, I covered the architecture and why Azure-native services replace the open-source stack. Now let's build the ingestion pipeline. <a href="part3-chat-and-deployment.html">Part 3</a> covers chat history, streaming, and deployment.</em></p>
+
+        <hr>
+
+        <h2>The Five-Step Pipeline</h2>
+
+<pre><code>User Upload (PDF / DOCX / TXT / Image)
+     |
+     v  Step 1: Blob Storage
+Azure Blob Storage &rarr; persistent document store &rarr; blob URL
+     |
+     v  Step 2: Document Intelligence
+Azure AI Document Intelligence &rarr; structured text with page numbers
+     |
+     v  Step 3: Custom Chunker
+Sentence-based splitting with overlap &rarr; list of chunks
+     |
+     v  Step 4: Embedder
+Azure OpenAI text-embedding-3-small &rarr; 1536-dim vectors
+     |
+     v  Step 5: AI Search Index
+Azure AI Search &rarr; upsert documents with text + vector + metadata
+     |
+     v
+Done &rarr; {"pages_parsed": 1, "chunks_created": 2, "chunks_indexed": 2}</code></pre>
+
+        <p>One API call from the frontend triggers all five steps. Let me walk through each.</p>
+
+        <hr>
+
+        <h2>Step 1: Azure Blob Storage &mdash; Document Persistence</h2>
+
+        <p>Before any processing, the raw file is stored in Azure Blob Storage. This ensures the original is always recoverable &mdash; if parsing fails, if chunking parameters change, if you need to re-index later.</p>
+
+<pre><code class="language-python">def upload_document(filename: str, content: bytes, content_type: str) -> str:
+    container_client = _ensure_container()
+    blob_client = container_client.get_blob_client(filename)
+    blob_client.upload_blob(
+        content,
+        overwrite=True,
+        content_settings=ContentSettings(content_type=content_type),
+    )
+    return blob_client.url</code></pre>
+
+        <p>The <code>_ensure_container()</code> call is idempotent &mdash; it creates the container on first upload and is a no-op afterwards. <code>overwrite=True</code> means re-uploading a file with the same name replaces it cleanly.</p>
+
+        <p><strong>Supported file types:</strong> PDF, DOCX, TXT, PNG, JPG, JPEG, TIFF, BMP. The content type is set explicitly for each format so Azure serves the blob correctly.</p>
+
+        <p>Cost: Standard LRS storage is $0.018/GB/month. 100MB of documents costs $0.002/month.</p>
+
+        <hr>
+
+        <h2>Step 2: Azure Document Intelligence &mdash; Parsing</h2>
+
+        <p>This is where Azure shines over PyMuPDF. Document Intelligence's <code>prebuilt-layout</code> model handles:</p>
+
+        <ul>
+          <li><strong>PDFs</strong>: Layout-aware extraction with reading order, not just raw text dump</li>
+          <li><strong>DOCX</strong>: Structured paragraph and section extraction</li>
+          <li><strong>Images</strong>: Full OCR for JPEG, PNG, TIFF, BMP</li>
+          <li><strong>Tables</strong>: Structured table extraction (rows, columns, headers)</li>
+        </ul>
+
+        <p>PyMuPDF extracts raw text from PDFs but misses tables entirely and doesn't support images. For DOCX, you need a separate <code>python-docx</code> library. Document Intelligence handles all formats through one model.</p>
+
+<pre><code class="language-python">def parse_document(content: bytes, filename: str) -> list[ParsedPage]:
+    client = get_doc_intelligence_client()
+
+    poller = client.begin_analyze_document(
+        model_id="prebuilt-layout",
+        analyze_request=content,
+        content_type="application/octet-stream",
+    )
+    result = poller.result()
+
+    pages: list[ParsedPage] = []
+    if result.pages:
+        for page in result.pages:
+            page_text_lines = []
+            if page.lines:
+                for line in page.lines:
+                    page_text_lines.append(line.content)
+
+            text = "\n".join(page_text_lines).strip()
+            if text:
+                pages.append(ParsedPage(
+                    text=text,
+                    page_number=page.page_number,
+                    filename=filename,
+                ))
+
+    # Fallback: if page-level extraction fails, use full content
+    if not pages and result.content:
+        pages.append(ParsedPage(text=result.content, page_number=1, filename=filename))
+
+    return pages</code></pre>
+
+        <p>The <code>begin_analyze_document()</code> call is asynchronous on Azure's side &mdash; it returns a poller that you call <code>.result()</code> on. For a 5-page PDF, this typically takes 2&ndash;5 seconds. For a 100-page document, 15&ndash;30 seconds.</p>
+
+        <h3>Plain Text Optimization</h3>
+
+        <p>For <code>.txt</code> files, we bypass Document Intelligence entirely. There's no layout to analyze &mdash; just decode the bytes to UTF-8:</p>
+
+<pre><code class="language-python">def parse_plain_text(content: bytes, filename: str) -> list[ParsedPage]:
+    text = content.decode("utf-8", errors="replace").strip()
+    if not text:
+        return []
+    return [ParsedPage(text=text, page_number=1, filename=filename)]</code></pre>
+
+        <p>This saves both time and cost. The free tier gives 500 pages/month &mdash; no reason to waste a page on a text file.</p>
+
+        <hr>
+
+        <h2>Step 3: Custom Sentence Chunker &mdash; Why I Wrote My Own</h2>
+
+        <p>Project 1 used LlamaIndex's <code>SentenceWindowNodeParser</code>. It works well, but it pulls in <code>llama-index-core</code> and its entire dependency tree. For a sentence-based chunker, that's heavy.</p>
+
+        <p>The custom chunker is 99 lines. It splits on sentence boundaries (<code>.!?</code> followed by whitespace) and maintains configurable overlap:</p>
+
+<pre><code class="language-python">def chunk_pages(pages: list[ParsedPage]) -> list[Chunk]:
+    settings = get_settings()
+    max_chars = settings.chunk_size * 4      # ~4 chars per token
+    overlap_chars = settings.chunk_overlap * 4
+
+    chunks: list[Chunk] = []
+    global_index = 0
+
+    for page in pages:
+        sentences = _split_into_sentences(page.text)
+        current_chunk_sentences: list[str] = []
+        current_length = 0
+
+        for sentence in sentences:
+            sentence_len = len(sentence)
+
+            if current_length + sentence_len > max_chars and current_chunk_sentences:
+                # Emit current chunk
+                chunk_text = " ".join(current_chunk_sentences)
+                chunks.append(Chunk(
+                    text=chunk_text,
+                    filename=page.filename,
+                    page_number=page.page_number,
+                    chunk_index=global_index,
+                ))
+                global_index += 1
+
+                # Keep overlap sentences for next chunk
+                overlap_sentences: list[str] = []
+                overlap_len = 0
+                for s in reversed(current_chunk_sentences):
+                    if overlap_len + len(s) > overlap_chars:
+                        break
+                    overlap_sentences.insert(0, s)
+                    overlap_len += len(s)
+
+                current_chunk_sentences = overlap_sentences
+                current_length = overlap_len
+
+            current_chunk_sentences.append(sentence)
+            current_length += sentence_len
+
+        # Emit final chunk
+        if current_chunk_sentences:
+            chunk_text = " ".join(current_chunk_sentences)
+            chunks.append(Chunk(text=chunk_text, ...))
+            global_index += 1
+
+    return chunks</code></pre>
+
+        <h3>Why Sentence Boundaries?</h3>
+
+        <p>Splitting mid-sentence creates chunks where the first or last statement is incomplete. The model can't properly understand "...optimizing computational efficiency and" or "implementing robust data privacy measures..." without the surrounding context. Sentence-boundary splitting ensures every chunk contains complete thoughts.</p>
+
+        <h3>Why Overlap?</h3>
+
+        <p>Without overlap, a fact that spans two chunks ("The policy was updated in January. New rates take effect in March.") gets split across boundaries. With 128-token overlap (~512 characters), the last few sentences of chunk N are duplicated at the start of chunk N+1. This redundancy ensures cross-boundary facts appear in at least one complete chunk.</p>
+
+        <h3>Configuration</h3>
+
+<pre><code class="language-python">chunk_size: int = 512       # ~2,048 characters per chunk
+chunk_overlap: int = 128    # ~512 characters of overlap</code></pre>
+
+        <p>The 512-token target balances two concerns: <strong>too small</strong> (128 tokens) means each chunk lacks context and retrieval returns fragments. <strong>Too large</strong> (2048 tokens) means too much noise per chunk, wasting the LLM context window. 512 tokens is a sweet spot for English prose &mdash; roughly 2&ndash;3 paragraphs per chunk.</p>
+
+        <hr>
+
+        <h2>Step 4: Azure OpenAI Embedding</h2>
+
+        <p>Each chunk is converted to a 1536-dimensional vector using <code>text-embedding-3-small</code>:</p>
+
+<pre><code class="language-python">def embed_texts(texts: list[str]) -> list[list[float]]:
+    settings = get_settings()
+    client = get_openai_client()
+    response = client.embeddings.create(
+        input=texts,
+        model=settings.azure_openai_embedding_deployment,
+    )
+    return [item.embedding for item in response.data]</code></pre>
+
+        <p>The entire function is 7 lines. Batch embedding is built into the API &mdash; you pass a list of texts and get back a list of vectors. For large documents with hundreds of chunks, the ingest route processes in batches of 100.</p>
+
+        <h3>Why text-embedding-3-small Over text-embedding-3-large?</h3>
+
+        <table>
+          <thead>
+            <tr><th>Model</th><th>Dimensions</th><th>Cost per 1M tokens</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>text-embedding-3-small</td><td>1,536</td><td>$0.02</td></tr>
+            <tr><td>text-embedding-3-large</td><td>3,072</td><td>$0.13</td></tr>
+          </tbody>
+        </table>
+
+        <p>The small model is 6.5x cheaper with half the vector dimensions. For document-level search (not fine-grained semantic similarity), the quality difference is negligible. And halving dimensions halves the AI Search storage cost.</p>
+
+        <hr>
+
+        <h2>Step 5: Azure AI Search Index &mdash; Schema and Upsert</h2>
+
+        <p>The index schema defines what's searchable and how:</p>
+
+<pre><code class="language-python">fields = [
+    SimpleField(name="id", type=String, key=True),
+    SearchableField(name="text", type=String, analyzer_name="en.microsoft"),
+    SearchField(name="embedding", type=Collection(Single),
+                searchable=True, vector_search_dimensions=1536,
+                vector_search_profile_name="default-vector-profile"),
+    SimpleField(name="filename", type=String, filterable=True, facetable=True),
+    SimpleField(name="page_number", type=Int32, filterable=True, sortable=True),
+    SimpleField(name="chunk_index", type=Int32, sortable=True),
+    SimpleField(name="created_at", type=String),
+]</code></pre>
+
+        <p>Each field serves a specific retrieval purpose:</p>
+
+        <table>
+          <thead>
+            <tr><th>Field</th><th>Type</th><th>Purpose</th></tr>
+          </thead>
+          <tbody>
+            <tr><td><code>id</code></td><td>String (key)</td><td>UUID per chunk</td></tr>
+            <tr><td><code>text</code></td><td>Searchable</td><td>BM25 keyword search + semantic ranker input</td></tr>
+            <tr><td><code>embedding</code></td><td>Vector (1536)</td><td>HNSW dense search</td></tr>
+            <tr><td><code>filename</code></td><td>Filterable</td><td>Filter results by source document</td></tr>
+            <tr><td><code>page_number</code></td><td>Filterable + Sortable</td><td>Citation metadata + page filtering</td></tr>
+            <tr><td><code>chunk_index</code></td><td>Sortable</td><td>Reconstruct document order</td></tr>
+            <tr><td><code>created_at</code></td><td>String</td><td>Audit trail</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Vector Search Configuration</h3>
+
+<pre><code class="language-python">vector_search = VectorSearch(
+    algorithms=[HnswAlgorithmConfiguration(name="default-hnsw")],
+    profiles=[VectorSearchProfile(
+        name="default-vector-profile",
+        algorithm_configuration_name="default-hnsw",
+    )],
+)</code></pre>
+
+        <p>HNSW (Hierarchical Navigable Small World) is the vector search algorithm. It builds a graph structure over the vectors for fast approximate nearest-neighbor search. Azure AI Search manages the HNSW index automatically &mdash; no manual tuning of <code>ef_construction</code> or <code>M</code> parameters needed.</p>
+
+        <h3>Semantic Search Configuration</h3>
+
+<pre><code class="language-python">semantic_config = SemanticConfiguration(
+    name="default-semantic-config",
+    prioritized_fields=SemanticPrioritizedFields(
+        content_fields=[SemanticField(field_name="text")],
+    ),
+)</code></pre>
+
+        <p>This tells the semantic ranker which field contains the main content for deep neural reranking. When you query with <code>query_type="semantic"</code>, Azure runs its cross-encoder model on the <code>text</code> field of the top candidates &mdash; similar to what CrossEncoder does locally in Project 1, but server-side with a Microsoft-trained model.</p>
+
+        <h3>Index Creation: Idempotent</h3>
+
+<pre><code class="language-python">def ensure_index() -> None:
+    client = get_index_client()
+    index = SearchIndex(
+        name=settings.azure_search_index_name,
+        fields=fields,
+        vector_search=vector_search,
+        semantic_search=semantic_search,
+    )
+    client.create_or_update_index(index)</code></pre>
+
+        <p><code>create_or_update_index()</code> is idempotent &mdash; it creates the index on first call and updates the schema on subsequent calls. This runs at API startup via the lifespan handler, so the index is always ready before the first request.</p>
+
+        <h3>Document Upsert</h3>
+
+<pre><code class="language-python">def upsert_chunks(chunks: list[Chunk], embeddings: list[list[float]]) -> int:
+    documents = [
+        {
+            "id": str(uuid.uuid4()),
+            "text": chunk.text,
+            "embedding": embedding,
+            "filename": chunk.filename,
+            "page_number": chunk.page_number,
+            "chunk_index": chunk.chunk_index,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+        for chunk, embedding in zip(chunks, embeddings)
+    ]
+
+    batch_size = 1000
+    total = 0
+    for i in range(0, len(documents), batch_size):
+        batch = documents[i : i + batch_size]
+        result = client.upload_documents(documents=batch)
+        total += sum(1 for r in result if r.succeeded)
+
+    return total</code></pre>
+
+        <p>Batching at 1,000 documents handles large files efficiently. The <code>succeeded</code> check counts only successfully indexed chunks &mdash; any failures (malformed data, quota exceeded) are silently excluded from the total.</p>
+
+        <h3>Why Manual Push Instead of AI Search Auto-Indexing?</h3>
+
+        <p>Azure AI Search can automatically pull from Blob Storage using built-in indexers. I chose manual push for three reasons:</p>
+
+        <ol>
+          <li><strong>Full pipeline visibility</strong> &mdash; I can see exactly what was parsed, how it was chunked, and how many vectors were created</li>
+          <li><strong>Custom chunking</strong> &mdash; AI Search's built-in chunking doesn't support sentence-boundary awareness</li>
+          <li><strong>Debugging</strong> &mdash; when retrieval quality is poor, I can inspect each pipeline step independently</li>
+        </ol>
+
+        <hr>
+
+        <h2>The Complete Ingest Route</h2>
+
+        <p>All five steps are orchestrated by a single FastAPI endpoint:</p>
+
+<pre><code class="language-python">@router.post("/", response_model=IngestResponse)
+async def ingest_document(file: UploadFile = File(...)):
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported type '{suffix}'")
+
+    content = await file.read()
+
+    # Step 1: Blob Storage
+    blob_url = upload_document(file.filename, content, content_type)
+
+    # Step 2: Document Intelligence (or plain text fallback)
+    if suffix == ".txt":
+        pages = parse_plain_text(content, file.filename)
+    else:
+        pages = parse_document(content, file.filename)
+
+    # Step 3: Chunk
+    chunks = chunk_pages(pages)
+
+    # Step 4: Embed (in batches of 100)
+    texts = [chunk.text for chunk in chunks]
+    embeddings = []
+    for i in range(0, len(texts), 100):
+        embeddings.extend(embed_texts(texts[i : i + 100]))
+
+    # Step 5: Index
+    ensure_index()
+    indexed = upsert_chunks(chunks, embeddings)
+
+    return IngestResponse(
+        filename=file.filename, blob_url=blob_url,
+        pages_parsed=len(pages), chunks_created=len(chunks),
+        chunks_indexed=indexed,
+    )</code></pre>
+
+        <p>For a 5-page PDF, this typically takes 5&ndash;10 seconds end-to-end. For a plain text file, under 3 seconds (no Document Intelligence call).</p>
+
+        <p>In <a href="part3-chat-and-deployment.html">Part 3</a>, I'll cover the query pipeline &mdash; how hybrid search with semantic ranking works in a single API call, the GPT-4o-mini generator with citation enforcement, Cosmos DB's partition key design for chat sessions, streaming responses via Server-Sent Events, the Streamlit frontend, and Docker deployment.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-architecture.html">&larr; Part 1: Architecture</a>
+        <a href="part3-chat-and-deployment.html">Part 3: Chat &amp; Deployment &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

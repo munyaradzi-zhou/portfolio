@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat History, Streaming, and Docker Deployment (Part 3) &mdash; Azure Native Search Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Chat History, Streaming, and Docker Deployment</h1>
+        <p class="meta">Azure Native Search Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series. In <a href="part1-architecture.html">Part 1</a>, I covered the architecture. In <a href="part2-ingestion-pipeline.html">Part 2</a>, I built the ingestion pipeline. Now let's cover the query pipeline, chat history, streaming, and deployment.</em></p>
+
+        <hr>
+
+        <h2>The Query Pipeline: One Call to Rule Them All</h2>
+
+        <p>When a user asks a question, three things happen:</p>
+
+<pre><code>"How many days per week can employees work remotely?"
+     |
+     v  Embed question &rarr; 1536-dim vector
+     |
+     v  Azure AI Search (single API call)
+     |    +-- BM25 keyword: matches "days", "week", "remotely"
+     |    +-- Vector search: HNSW nearest neighbors
+     |    +-- Reciprocal Rank Fusion: combine both
+     |    +-- Semantic ranker: deep neural reranking
+     |
+     v  GPT-4o-mini generates cited answer
+     |
+     v  "Up to 3 days per week [Doc: company_policy.txt, Page: 1]"</code></pre>
+
+        <h3>Hybrid Search + Semantic Ranking</h3>
+
+        <p>The retriever is the simplest service in the entire system &mdash; 50 lines for a pipeline that replaces 120+ lines in the open-source version:</p>
+
+<pre><code class="language-python">def hybrid_search(question: str, top_n: int = 5) -> list[dict]:
+    client = get_search_client()
+    query_embedding = embed_texts([question])[0]
+
+    vector_query = VectorizedQuery(
+        vector=query_embedding,
+        k_nearest_neighbors=top_n * 4,   # Over-retrieve for better fusion
+        fields="embedding",
+    )
+
+    try:
+        results = client.search(
+            search_text=question,
+            vector_queries=[vector_query],
+            query_type="semantic",
+            semantic_configuration_name="default-semantic-config",
+            top=top_n,
+        )
+        candidates = _extract_results(results)
+    except Exception:
+        # Free tier: fall back to hybrid without semantic ranker
+        results = client.search(
+            search_text=question,
+            vector_queries=[vector_query],
+            top=top_n,
+        )
+        candidates = _extract_results(results)
+
+    return candidates[:top_n]</code></pre>
+
+        <p>The <code>k_nearest_neighbors=top_n * 4</code> is deliberate. We over-retrieve 4x more vector candidates than we need, let the semantic ranker evaluate all of them, then return only the top <code>top_n</code>. More candidates going into the ranker means better final quality.</p>
+
+        <p>The try/except handles tier differences gracefully. Azure AI Search Free tier doesn't include the semantic ranker &mdash; the code falls back to hybrid (vector + BM25) without it. On Basic+ tier, the semantic ranker kicks in automatically.</p>
+
+        <p><strong>Live result:</strong></p>
+
+<pre><code>Question: "How many days per week can employees work remotely?"
+
+Candidate 1: "...remotely up to 3 days per week..."  &rarr; score: 3.300
+Candidate 2: "...expenses over $25..."                &rarr; score: 1.334</code></pre>
+
+        <p>The semantic ranker assigns the relevant chunk a score 2.5x higher than the irrelevant one. This is the neural reranking at work &mdash; it understands that "3 days per week" answers "how many days" even though the BM25 keyword overlap alone doesn't capture that relationship.</p>
+
+        <hr>
+
+        <h2>GPT-4o-mini Generation with Citation Enforcement</h2>
+
+        <p>The generator's system prompt enforces three rules:</p>
+
+<pre><code class="language-python">SYSTEM_PROMPT = """\
+You are a precise document Q&amp;A assistant. Answer the user's question using ONLY \
+the retrieved context below. For every factual claim, cite the source as \
+[Doc: &lt;filename&gt;, Page: &lt;page&gt;]. If the context does not contain enough \
+information to answer, say "I don't have enough information in the indexed \
+documents to answer this question." Never fabricate information."""</code></pre>
+
+        <p>Three constraints, each preventing a specific failure mode:</p>
+
+        <ol>
+          <li><strong>"ONLY the retrieved context"</strong> &mdash; prevents hallucination from parametric knowledge. If the answer isn't in the chunks, the model can't use training data to guess.</li>
+          <li><strong>"cite the source as [Doc: filename, Page: N]"</strong> &mdash; forces every claim to have a verifiable reference. Users can check citations against the original document.</li>
+          <li><strong>"I don't have enough information"</strong> &mdash; gives the model an explicit escape hatch. Without this, models fabricate answers rather than admitting ignorance.</li>
+        </ol>
+
+        <p>The context is formatted with numbered source references:</p>
+
+<pre><code>--- Retrieved Context ---
+[1] File: company_policy.txt, Page: 1
+Acme Corp allows all full-time employees to work remotely up to 3 days per week.
+Remote work days must be scheduled in advance...
+
+[2] File: company_policy.txt, Page: 1
+Receipts are required for all expenses over $25...
+--- End Context ---
+
+User Question: How many days per week can employees work remotely?</code></pre>
+
+        <p><strong>Live output:</strong> <code>"Employees can work remotely up to 3 days per week [Doc: company_policy.txt, Page: 1]."</code></p>
+
+        <p>Temperature is 0.1 &mdash; just enough variation to avoid robotic repetition, low enough to keep answers factual.</p>
+
+        <h3>Multi-Turn Conversations</h3>
+
+<pre><code class="language-python">async def generate_answer(
+    question: str, chunks: list[dict], chat_history: list[dict] | None = None
+) -> str:
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if chat_history:
+        for msg in chat_history[-6:]:  # Last 3 turns (6 messages)
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+    messages.append({
+        "role": "user",
+        "content": CONTEXT_TEMPLATE.format(context=context, question=question),
+    })</code></pre>
+
+        <p>The <code>[-6:]</code> limit keeps the context window manageable &mdash; last 3 conversation turns (3 user + 3 assistant messages). This is enough for follow-up questions ("What about for new employees?" after asking about remote work) without bloating the prompt with the entire session.</p>
+
+        <hr>
+
+        <h2>Chat History: Cosmos DB Design</h2>
+
+        <p>Project 1 stored chat history in Streamlit's <code>session_state</code> &mdash; wiped on every page refresh. Project 2 persists conversations in Azure Cosmos DB, so users can close the browser and resume later.</p>
+
+        <h3>Schema: Two Document Types, One Container</h3>
+
+<pre><code>Database: chatdb
+Container: sessions
+Partition Key: /session_id</code></pre>
+
+        <p>Two document types share the same container:</p>
+
+        <p><strong>Session metadata:</strong></p>
+
+<pre><code class="language-json">{
+    "id": "meta_sess_afeb702acc5b",
+    "session_id": "sess_afeb702acc5b",
+    "title": "How many days per week can employees work remotely?",
+    "created_at": "2026-02-19T13:03:23+00:00",
+    "updated_at": "2026-02-19T13:03:30+00:00",
+    "message_count": 2,
+    "type": "session_meta"
+}</code></pre>
+
+        <p><strong>Messages:</strong></p>
+
+<pre><code class="language-json">{
+    "id": "msg_218f140dd8b7",
+    "session_id": "sess_afeb702acc5b",
+    "role": "assistant",
+    "content": "Employees can work remotely up to 3 days per week [Doc: ...].",
+    "sources": [
+        {"filename": "company_policy.txt", "page_number": 1,
+         "text": "...", "score": 3.300}
+    ],
+    "created_at": "2026-02-19T13:03:30+00:00",
+    "type": "message"
+}</code></pre>
+
+        <h3>Why session_id as Partition Key?</h3>
+
+        <p>Every query is session-scoped: "get all messages for session X", "add a message to session X", "delete session X". Using <code>session_id</code> as the partition key means:</p>
+
+        <ul>
+          <li><strong>Single-partition reads</strong>: ~1 RU per point read (cheapest possible)</li>
+          <li><strong>Co-located data</strong>: All messages for a session are physically stored together</li>
+          <li><strong>No hot partitions</strong>: A session will never have thousands of messages</li>
+          <li><strong>Efficient deletes</strong>: Delete a session = delete all documents in one partition</li>
+        </ul>
+
+        <p>Cross-partition queries (listing all sessions) cost more but happen rarely &mdash; only when loading the session sidebar.</p>
+
+        <h3>Auto-Titling</h3>
+
+        <p>Sessions start with the title "New conversation." On the first user message, the session auto-titles itself:</p>
+
+<pre><code class="language-python">if role == "user" and meta.get("title") == "New conversation":
+    meta["title"] = content[:80]</code></pre>
+
+        <p>The first 80 characters of the first question become the session title. Simple, no LLM call needed &mdash; the user's own words are the best summary.</p>
+
+        <h3>Session CRUD Endpoints</h3>
+
+<pre><code>POST   /chat/sessions                    &rarr; Create new session
+GET    /chat/sessions                    &rarr; List all sessions
+GET    /chat/sessions/{id}/messages      &rarr; Get messages in session
+DELETE /chat/sessions/{id}               &rarr; Delete session + all messages</code></pre>
+
+        <hr>
+
+        <h2>Streaming Responses: Server-Sent Events</h2>
+
+        <p>The non-streaming endpoint waits for the full answer before responding. For long answers, this creates a noticeable delay. The streaming endpoint sends tokens as they arrive:</p>
+
+<pre><code class="language-python">@router.post("/stream")
+async def query_documents_stream(req: QueryRequest):
+    async def event_stream():
+        candidates = hybrid_search(req.question, top_n=req.top_k)
+        full_answer = []
+
+        async for token in generate_answer_stream(
+            req.question, candidates, chat_history
+        ):
+            full_answer.append(token)
+            yield f"data: {token}\n\n"
+
+        # Save complete answer to Cosmos DB
+        if req.session_id:
+            add_message(req.session_id, "assistant", "".join(full_answer))
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")</code></pre>
+
+        <p>The SSE (Server-Sent Events) format is <code>data: &lt;token&gt;\n\n</code>. The client reads tokens as they arrive and appends them to the display. <code>[DONE]</code> signals the end of the stream.</p>
+
+        <p>The generator uses Azure OpenAI's native streaming:</p>
+
+<pre><code class="language-python">stream = await client.chat.completions.create(
+    model=settings.azure_openai_chat_deployment,
+    messages=messages,
+    max_tokens=4096,
+    temperature=0.1,
+    stream=True,
+)
+
+async for chunk in stream:
+    if chunk.choices and chunk.choices[0].delta.content:
+        yield chunk.choices[0].delta.content</code></pre>
+
+        <p>Token-by-token streaming means the user sees the first word within ~500ms, even if the complete answer takes 3&ndash;4 seconds to generate.</p>
+
+        <hr>
+
+        <h2>The Streamlit Frontend</h2>
+
+        <p>The frontend provides three capabilities: document upload, chat with source citations, and session management.</p>
+
+        <h3>Document Upload</h3>
+
+<pre><code class="language-python">uploaded_file = st.file_uploader(
+    "Choose a file",
+    type=["pdf", "docx", "txt", "png", "jpg", "jpeg", "tiff", "bmp"],
+)
+if uploaded_file and st.button("Ingest Document"):
+    with st.spinner("Uploading, parsing, chunking &amp; indexing..."):
+        files = {"file": (uploaded_file.name, uploaded_file.getvalue())}
+        resp = requests.post(f"{API_BASE}/ingest/", files=files, timeout=180)
+        data = resp.json()
+        st.success(
+            f"Indexed {data['filename']}: "
+            f"{data['pages_parsed']} pages, "
+            f"{data['chunks_created']} chunks, "
+            f"{data['chunks_indexed']} vectors"
+        )</code></pre>
+
+        <h3>Chat with Source Citations</h3>
+
+        <p>Each assistant response includes expandable source citations:</p>
+
+<pre><code class="language-python">if question := st.chat_input("Ask a question about your documents"):
+    with st.chat_message("assistant"):
+        with st.spinner("Searching and generating answer..."):
+            resp = requests.post(
+                f"{API_BASE}/query/",
+                json={"question": question, "session_id": session_id, "top_k": 5},
+            )
+            data = resp.json()
+            st.markdown(data["answer"])
+
+            if data["sources"]:
+                with st.expander("Sources"):
+                    for src in data["sources"]:
+                        st.markdown(
+                            f"**{src['filename']}** (Page {src['page_number']}) "
+                            f"- score: {src['score']:.3f}"
+                        )
+                        st.caption(src["text"])</code></pre>
+
+        <p>Users can expand "Sources" to see the exact chunks the answer was derived from, with retrieval scores and text previews. This transparency builds trust &mdash; you can verify that the answer matches the source material.</p>
+
+        <h3>Session Sidebar</h3>
+
+        <p>The left sidebar lists all chat sessions with one-click switching. Active sessions are highlighted. Clicking a session loads its full message history from Cosmos DB. Creating a "New Conversation" generates a fresh session_id.</p>
+
+        <hr>
+
+        <h2>Docker Deployment</h2>
+
+        <h3>Two Containers, No Vector DB</h3>
+
+<pre><code class="language-yaml">services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "8000:8000"
+    env_file: .env
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "8501:8501"
+    environment:
+      - API_BASE=http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy</code></pre>
+
+        <p>Compare this to Project 1, which needed a third container for Qdrant with persistent volumes. Azure-native means the vector database is managed &mdash; no container, no volumes, no health checks for the vector DB.</p>
+
+        <p>The <code>depends_on: condition: service_healthy</code> ensures the frontend doesn't start until the API's health check passes. The API's lifespan handler creates the AI Search index and Cosmos DB on startup, so by the time the health check succeeds, all Azure resources are ready.</p>
+
+        <h3>Separate Dockerfiles</h3>
+
+        <p><strong>API (Dockerfile.api):</strong></p>
+
+<pre><code class="language-dockerfile">FROM python:3.11-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY config.py .
+COPY api/ api/
+EXPOSE 8000
+CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]</code></pre>
+
+        <p><strong>Frontend (Dockerfile.frontend):</strong></p>
+
+<pre><code class="language-dockerfile">FROM python:3.11-slim
+WORKDIR /app
+RUN pip install --no-cache-dir streamlit requests
+COPY frontend/ frontend/
+EXPOSE 8501
+CMD ["streamlit", "run", "frontend/app.py",
+     "--server.port=8501", "--server.address=0.0.0.0"]</code></pre>
+
+        <p>The frontend Dockerfile doesn't copy <code>requirements.txt</code> &mdash; it only needs <code>streamlit</code> and <code>requests</code>. This keeps the frontend image minimal (~150MB vs ~350MB for the API).</p>
+
+        <h3>One Command</h3>
+
+<pre><code class="language-bash">cp .env.example .env
+# Fill in Azure credentials
+docker compose up --build</code></pre>
+
+        <p>API on port 8000, frontend on port 8501, API docs on port 8000/docs. Total image size: ~500MB (vs ~4GB in Project 1).</p>
+
+        <hr>
+
+        <h2>Pydantic Settings: Centralized Configuration</h2>
+
+<pre><code class="language-python">class Settings(BaseSettings):
+    # Azure OpenAI
+    azure_openai_api_key: str
+    azure_openai_endpoint: str
+    azure_openai_api_version: str = "2024-10-21"
+    azure_openai_embedding_deployment: str = "text-embedding-3-small"
+    azure_openai_chat_deployment: str = "gpt-4o-mini"
+
+    # Azure AI Search
+    azure_search_endpoint: str
+    azure_search_api_key: str
+    azure_search_index_name: str = "documents"
+
+    # ... 6 more Azure services
+
+    model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()</code></pre>
+
+        <p><code>@lru_cache</code> ensures settings are loaded once and reused. <code>extra = "ignore"</code> means additional environment variables don't cause validation errors. Every service calls <code>get_settings()</code> for its Azure credentials &mdash; no hardcoded values anywhere.</p>
+
+        <hr>
+
+        <h2>Five Lessons Learned</h2>
+
+        <p><strong>1. Managed services eliminate entire problem categories.</strong> I didn't just replace Qdrant with AI Search. I eliminated container health monitoring, persistent volume management, HNSW parameter tuning, manual BM25 scoring, CrossEncoder model downloads, and PyTorch CUDA compatibility. The code is simpler, but the operational overhead reduction is the real win.</p>
+
+        <p><strong>2. Tier-aware code handles graceful degradation.</strong> The semantic ranker requires Basic+ tier. The retriever tries semantic ranking and falls back to hybrid search on the Free tier. This lets you develop cheaply (Free tier) and deploy with full quality (Basic tier) without code changes.</p>
+
+        <p><strong>3. Custom chunking beats framework chunking for simple cases.</strong> 99 lines of Python replaced LlamaIndex as a dependency. For sentence-based splitting with overlap, you don't need a framework. The custom chunker is easier to debug, has zero dependencies, and does exactly what you need.</p>
+
+        <p><strong>4. Session_id as partition key is the right Cosmos DB pattern.</strong> Every access pattern is session-scoped. Partition key = session_id means every query is a cheap single-partition read. This is the canonical Cosmos DB design for chat applications.</p>
+
+        <p><strong>5. Plain text parsing should skip Document Intelligence.</strong> Sending a <code>.txt</code> file to Document Intelligence wastes a free-tier page and adds 2&ndash;3 seconds of latency. The plain text fallback (<code>content.decode("utf-8")</code>) is instant and free. Always optimize for the common case.</p>
+
+        <hr>
+
+        <h2>Final Architecture</h2>
+
+<pre><code>PRODUCTION STACK
+
+  Streamlit        FastAPI
+  Frontend   &rarr;   POST /ingest/  |  POST /query/
+  :8501            POST /query/stream (SSE)
+                   /chat/sessions (CRUD)
+                   GET /documents/  |  GET /health
+                         |
+          +--------------+-----------------+
+          v              v                 v
+  Azure Blob      Azure Doc         Azure Cosmos
+  Storage         Intelligence      DB (Serverless)
+  (documents)     (parsing)         (chat history)
+
+  Azure OpenAI    Azure AI Search
+  embed + chat    hybrid + semantic + HNSW
+  (GPT-4o-mini)   (single API call retrieval)
+
+  Docker Compose: 2 services (API + Frontend)
+  No self-hosted vector DB. No PyTorch. No LangChain.
+  Total: ~500MB Docker images, $12-20/month Azure cost</code></pre>
+
+        <p>The system takes an uploaded document, parses it, chunks it, embeds it, indexes it, and makes it searchable &mdash; all through managed Azure services. Questions get answered with citations in 2&ndash;4 seconds, conversations persist across sessions, and the whole thing runs in two Docker containers.</p>
+
+        <p>Six Azure services. Two Docker containers. 500MB total. $12&ndash;20/month. 5/5 questions answered correctly.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-ingestion-pipeline.html">&larr; Part 2: Ingestion Pipeline</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
