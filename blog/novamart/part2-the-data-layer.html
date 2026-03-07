@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Data Layer: Skills Nobody Teaches You in Class (Part 2) &mdash; NovaMart Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>The Data Layer: Skills Nobody Teaches You in Class</h1>
+        <p class="meta">NovaMart Series &middot; Part 2 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 2 of a 3-part series on building NovaMart. Part 1 covered why an e-commerce platform is the perfect sandbox for learning production ML skills. Now we get into the data engineering and traditional ML &mdash; the skills that companies need most and college programs skip entirely.</em></p>
+
+        <hr>
+
+        <h2>The Clean Data Illusion</h2>
+
+        <p>In every ML course I took, the data arrived clean. A CSV file, already split into train and test sets, with a README explaining each column. The professor said "load the data" and thirty minutes later we were fitting models.</p>
+
+        <p>That's not how it works in the real world. Not even close.</p>
+
+        <p>At companies, ML engineers spend the majority of their time on data &mdash; finding it, cleaning it, validating it, transforming it, storing it properly, and building pipelines that do all of this automatically. It's the least glamorous part of the job and the most important. A brilliant model trained on bad data will give you bad predictions every time.</p>
+
+        <p>This is the part of NovaMart that taught me the most, because it's the part that college skips entirely.</p>
+
+        <hr>
+
+        <h2>Starting With Real Mess</h2>
+
+        <p>The backbone of NovaMart's data comes from the Olist dataset &mdash; about 100,000 real e-commerce orders from a Brazilian marketplace. This isn't a sanitized teaching dataset. It's eight separate CSV files that need to be stitched together: orders, order items, products, customers, sellers, payments, reviews, and geolocation data.</p>
+
+        <p>The first time I loaded it and started exploring, I understood why data engineering is a full-time job at every serious company.</p>
+
+        <p>Products had categories in Portuguese. Some orders had missing delivery dates. Reviews ranged from one-word verdicts to multi-paragraph essays. A handful of records had prices that were clearly wrong. Some customers appeared under slightly different identifiers. Dates were in inconsistent formats. Foreign key relationships didn't always hold.</p>
+
+        <p>In a college assignment, this would be a bug. In the real world, this is Tuesday.</p>
+
+        <p>The second dataset &mdash; Amazon product reviews &mdash; added richer product descriptions and ratings, but came with its own quirks. Merging two datasets with different schemas, different conventions, and different levels of completeness is a skill that no textbook exercise prepares you for.</p>
+
+        <hr>
+
+        <h2>Building a Real ETL Pipeline</h2>
+
+        <p>ETL &mdash; Extract, Transform, Load &mdash; is one of those terms that appears on every data engineering job description. In college, I vaguely understood what it meant. Building one from scratch made it concrete.</p>
+
+        <p><strong>Extract.</strong> A Prefect-orchestrated pipeline pulls the datasets from Kaggle, downloads them to a staging area, and handles retries if the download fails. It's not complicated, but automating it properly &mdash; with error handling, logging, and idempotency &mdash; is the difference between a script and a pipeline.</p>
+
+        <p><strong>Transform.</strong> This is where the real engineering lives. Each CSV goes through a cleaning process: null values are handled with domain-appropriate strategies (not just <code>dropna()</code>), data types are standardized, categories are translated and normalized, prices are validated against reasonable bounds, and duplicate records are flagged and resolved.</p>
+
+        <p>I used Great Expectations for data validation &mdash; a library that lets you define rules like "this column should never be null" or "prices should be between 0 and 10,000" and automatically checks every row. In college, you validate data by eyeballing a few rows. In production, you write automated tests that catch problems before they corrupt your models.</p>
+
+        <p><strong>Load.</strong> Clean data gets bulk-loaded into PostgreSQL with proper table schemas, indexes, and foreign key relationships. Products, customers, orders, order items, reviews &mdash; each in their own table, properly normalized.</p>
+
+        <p>The pipeline also archives raw data to cloud storage before any transformation, because one of the first lessons of data engineering is: never destroy the original. You will need it when you realize your transformation logic had a bug.</p>
+
+        <p>Prefect orchestrates the whole flow &mdash; managing task dependencies, handling retries, and logging everything. If the Kaggle download times out, it retries. If a validation check fails, it stops the pipeline before bad data reaches the database. This kind of orchestration is what tools like Airflow and Prefect are built for, and learning to use them on a real project is infinitely more valuable than reading their documentation.</p>
+
+        <hr>
+
+        <h2>The Data Warehouse</h2>
+
+        <p>After the raw data is in PostgreSQL, it's usable but not optimized for analysis. Answering questions like "what's the average order value by customer segment?" or "which categories are trending?" requires joining multiple tables, aggregating data, and applying business logic. Doing this ad hoc for every query is slow and error-prone.</p>
+
+        <p>The industry solution is a data warehouse &mdash; a structured layer of transformed tables designed for analytical queries. The standard tool for building one is dbt, and learning it was one of the highest-ROI investments in this entire project.</p>
+
+        <p>dbt lets you write transformation logic as SQL files organized into layers:</p>
+
+        <p><strong>Staging layer.</strong> The first pass &mdash; cleaning raw tables into a consistent format. Standardized column names, proper data types, basic deduplication. Six staging models that take the raw Olist and Amazon data and make it consistent.</p>
+
+        <p><strong>Intermediate layer.</strong> Where business logic lives. Joining orders with their items to calculate totals. Computing customer metrics. Aggregating daily sales. Three intermediate models that combine and reshape the staged data.</p>
+
+        <p><strong>Marts layer.</strong> The final, analytics-ready tables:</p>
+
+        <ul>
+          <li><strong>dim_products</strong>: 32,951 products with full category hierarchy, average ratings, and pricing</li>
+          <li><strong>dim_customers</strong>: 82,844 customers with RFM scores and segment labels</li>
+          <li><strong>fct_orders</strong>: 85,861 orders as fact records with all metrics attached</li>
+          <li><strong>agg_daily_sales</strong>: Daily rollups of revenue, order counts, and average order value</li>
+        </ul>
+
+        <p>The warehouse has 11 models and 15 automated tests. Every time the data refreshes, dbt checks that primary keys are unique, foreign keys are valid, and critical columns aren't null. If anything breaks, I know immediately.</p>
+
+        <p>This is how data teams at real companies work. They don't write one-off queries. They build tested, versioned, layered transformation pipelines. Learning this workflow on NovaMart gave me a skill that's directly transferable to any data-driven organization.</p>
+
+        <hr>
+
+        <h2>Customer Segmentation</h2>
+
+        <p>Customer segmentation is a classic ML interview topic. In college, you cluster the Iris dataset and move on. In practice, segmentation is a business-critical tool that drives marketing strategy, product development, and revenue optimization.</p>
+
+        <p>I used RFM analysis as the foundation:</p>
+
+        <ul>
+          <li><strong>Recency</strong>: How recently did this customer make a purchase?</li>
+          <li><strong>Frequency</strong>: How often do they buy?</li>
+          <li><strong>Monetary</strong>: How much do they spend?</li>
+        </ul>
+
+        <p>Each of 82,844 customers gets scored on these three dimensions based on their actual purchase history. The RFM features are computed in the dbt intermediate layer &mdash; so they update automatically when new data flows through the pipeline.</p>
+
+        <p>I then fed the RFM features into K-Means clustering. Instead of arbitrarily picking a number of clusters, I tested multiple values and used the silhouette score (0.42 for 5 clusters) to find the cleanest separation. The algorithm discovered five natural segments:</p>
+
+        <ul>
+          <li><strong>Loyal high-spenders</strong> &mdash; frequent buyers with high order values</li>
+          <li><strong>Occasional browsers</strong> &mdash; moderate engagement, mid-range spending</li>
+          <li><strong>One-time buyers</strong> &mdash; single purchase, never returned</li>
+          <li><strong>Bargain hunters</strong> &mdash; frequent but low-value purchases</li>
+          <li><strong>Rising stars</strong> &mdash; recent customers with increasing order values</li>
+        </ul>
+
+        <p>These aren't arbitrary labels. They emerged from real purchase patterns in real transaction data. Each customer in the database now carries a segment label, which the storefront could use to personalize the shopping experience.</p>
+
+        <p>The model training is tracked in MLflow &mdash; hyperparameters, cluster metrics, the trained model artifact, everything. If I want to retrain with different features or a different algorithm, I can compare results against the baseline. This is experiment tracking, and it's how ML teams manage the model lifecycle at scale.</p>
+
+        <hr>
+
+        <h2>Recommendation Engine</h2>
+
+        <p>Building a recommendation engine is on practically every ML engineer job description, but college courses rarely go beyond explaining the theory. The gap between "I understand collaborative filtering" and "I built one that works on 85,000 orders" is enormous.</p>
+
+        <p>I used ALS &mdash; Alternating Least Squares &mdash; a collaborative filtering algorithm from the <code>implicit</code> library. The core idea: build a matrix of customers and products, fill in the cells where purchases happened, then use matrix factorization to predict the empty cells &mdash; what each customer would likely buy next.</p>
+
+        <p>The model was trained with 64 latent factors and 50 iterations on an 80/20 train-test split. The key metrics:</p>
+
+        <ul>
+          <li><strong>Precision@10</strong>: Of the top 10 recommendations, how many were things the customer actually bought?</li>
+          <li><strong>Recall@10</strong>: Of everything the customer bought, how many did the recommendations catch?</li>
+          <li><strong>NDCG</strong>: Were the best recommendations ranked highest?</li>
+          <li><strong>MAP</strong>: How good was the overall ranking across all customers?</li>
+        </ul>
+
+        <p>The results were honest &mdash; this is a sparse dataset where most customers bought only a few items out of 32,951 products, so the numbers are modest. But the engine consistently learned real patterns: people who buy kitchen gadgets tend to also buy cookbooks; workout gear buyers often purchase supplements. These connections weren't programmed in. The algorithm discovered them from the data.</p>
+
+        <p>Every training run is logged to MLflow with full experiment tracking: hyperparameters, metrics, timing, and the serialized model artifact. This is the workflow that ML teams use to manage dozens of experiments and compare model versions &mdash; and it's a skill that hiring managers specifically look for.</p>
+
+        <hr>
+
+        <h2>Demand Forecasting</h2>
+
+        <p>Demand forecasting is one of those problems that sounds simple and is punishingly hard. "Predict how many orders we'll get next week" seems straightforward until you try it.</p>
+
+        <p>I trained two models and compared them:</p>
+
+        <p><strong>Prophet</strong> (developed by Meta) is a time series model that decomposes historical data into trend, seasonality, and holiday components. It's popular because it handles missing data and outliers gracefully.</p>
+
+        <p><strong>LightGBM</strong> is a gradient boosting model &mdash; a completely different approach. Instead of time series decomposition, it treats forecasting as a tabular prediction problem. I engineered features: day-of-week, month, weekend flag, and lagged values (sales 7, 14, and 30 days ago).</p>
+
+        <p>The results:</p>
+
+        <ul>
+          <li>Prophet: 181% MAPE. Not great.</li>
+          <li>LightGBM: 88% MAPE, 1469 RMSE. Better, but still humbling.</li>
+        </ul>
+
+        <p>Here's what this taught me that no course ever did: sometimes your model just isn't very good, and that's okay. The Olist data has high variance &mdash; some days have 50 orders, others have 500 &mdash; and neither model handles the spikes well. In a real company, this is where you'd invest in better features (external factors like holidays, promotions, weather) or more training data.</p>
+
+        <p>I didn't hide the poor results or cherry-pick metrics. Both models are logged in MLflow with honest evaluations and formal model cards documenting their limitations. Learning to evaluate, document, and communicate model performance &mdash; including failures &mdash; is a professional skill that matters as much as the modeling itself.</p>
+
+        <hr>
+
+        <h2>What This Phase Taught Me</h2>
+
+        <p>If I had to distill the data layer into a list of skills that college didn't teach me, it would be:</p>
+
+        <ol>
+          <li><strong>Real data is messy.</strong> Not "has a few nulls" messy. Genuinely chaotic. Handling that chaos is a skill.</li>
+          <li><strong>Pipelines matter more than models.</strong> A reliable ETL pipeline with proper validation is worth more than a clever algorithm trained on unreliable data.</li>
+          <li><strong>Data warehousing is a real discipline.</strong> dbt and the staging-intermediate-marts pattern is how the industry works. It's not in most ML curricula.</li>
+          <li><strong>Experiment tracking is non-negotiable.</strong> MLflow (or similar) should be part of every training run. "I think the model from last week was better" is not engineering.</li>
+          <li><strong>Models fail, and that's data.</strong> An 88% MAPE forecast is a learning experience, not a disaster. Document it, understand why, and improve it.</li>
+          <li><strong>Orchestration is infrastructure.</strong> Prefect, Airflow, or whatever tool &mdash; automating pipelines with retries, logging, and dependency management is a core ML engineering skill.</li>
+        </ol>
+
+        <p>Every one of these skills appears on job descriptions for ML engineers, data engineers, and applied scientists. None of them were part of my formal education. Building NovaMart made them tangible.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part1-why-i-built-this.html">&larr; Part 1: Why I Built This</a>
+        <a href="part3-the-intelligence-layer.html">Part 3: The Intelligence Layer &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
