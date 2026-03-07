@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The Intelligence Layer: GenAI, Search, and Keeping It All Alive (Part 3) &mdash; NovaMart Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>The Intelligence Layer: GenAI, Search, and Keeping It All Alive</h1>
+        <p class="meta">NovaMart Series &middot; Part 3 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 3 of a 3-part series on building NovaMart. Part 2 covered data engineering and traditional ML. Now we get to the frontier &mdash; the skills that are in the highest demand right now and barely exist in any curriculum at all.</em></p>
+
+        <hr>
+
+        <h2>The Skills That Don't Exist in Classrooms Yet</h2>
+
+        <p>If the data layer is the foundation that every ML engineer needs but college doesn't teach, the intelligence layer is the frontier &mdash; the skills that are in the highest demand right now and barely exist in any curriculum at all.</p>
+
+        <p>Vector embeddings. Semantic search. Retrieval-Augmented Generation. LLM integration. Streaming responses. Production monitoring. Drift detection.</p>
+
+        <p>These aren't tomorrow's skills. They're today's. Companies are hiring for them aggressively, and the supply of people who've actually built these systems is tiny. Most candidates can explain what RAG is. Far fewer have built a RAG pipeline that queries a real product catalog and streams answers to a real user interface.</p>
+
+        <p>This is the part of NovaMart that bridges the widest gap between classroom and industry.</p>
+
+        <hr>
+
+        <h2>Turning Products Into Math</h2>
+
+        <p>Before NovaMart could search intelligently, I needed to solve a fundamental problem: computers don't understand meaning. They match strings. "Waterproof hiking jacket" and "rain-resistant outdoor shell" are completely different strings that mean nearly the same thing. Traditional keyword search treats them as unrelated.</p>
+
+        <p>The solution is embeddings &mdash; one of the most important concepts in modern AI, and one that most ML courses mention in passing but never ask you to actually implement in a real system.</p>
+
+        <p>Here's how it works. You take a product's text &mdash; its name, description, category &mdash; and feed it through a language model (I used Azure OpenAI's text-embedding-3-small). What comes back is a vector: a list of 1,536 numbers that captures the semantic meaning of that product. Products with similar meanings end up close together in this 1,536-dimensional vector space, even if they use completely different words.</p>
+
+        <p>I generated embeddings for all 32,951 products in the catalog. Each product now has its mathematical fingerprint stored in PostgreSQL alongside its name, price, and description, using the pgvector extension for efficient vector operations.</p>
+
+        <p>This is the same technology stack that companies like Shopify, Instacart, and dozens of startups use for production AI search. Learning to generate, store, and query embeddings at scale is one of the most immediately marketable skills in the current job market.</p>
+
+        <hr>
+
+        <h2>Semantic Search</h2>
+
+        <p>With embeddings in place, search becomes a similarity problem instead of a keyword-matching problem. Here's what happens when a user types a query:</p>
+
+        <ol>
+          <li>The query gets converted into its own 1,536-dimensional embedding</li>
+          <li>PostgreSQL (via pgvector) computes the cosine similarity between the query embedding and all 32,951 product embeddings</li>
+          <li>The most semantically similar products come back, ranked by relevance</li>
+        </ol>
+
+        <p>The results are dramatically better than keyword search. "Birthday gift for a teenage girl who likes art" returns sketchbook sets, colored pencil collections, and art supply kits &mdash; even though none of those products contain the words "birthday," "teenage," or "girl." The system matched meaning, not words.</p>
+
+        <p>"Comfortable shoes for long runs on pavement" returns running shoes with cushioned soles, not hiking boots and shark slippers. "Something to keep my kid entertained on a flight" returns activity sets and portable games, not aviation equipment.</p>
+
+        <p>Building this taught me several things that no course covered:</p>
+
+        <p><strong>Embedding generation at scale is a pipeline problem.</strong> Generating 32,951 embeddings means managing API rate limits, handling failures gracefully, batching requests, and tracking coverage. I built a pipeline that tracks which products have embeddings and which don't, with coverage metrics visible on the admin dashboard.</p>
+
+        <p><strong>Vector indexing matters.</strong> On a small dataset, brute-force cosine similarity is fine. At scale, you need approximate nearest neighbor indexes (IVFFlat, HNSW). Understanding the tradeoffs between accuracy and speed is a production concern that doesn't come up in tutorials.</p>
+
+        <p><strong>Fallbacks are engineering.</strong> Not every product has an embedding (coverage isn't 100%). The system falls back to category-based matching when embeddings are missing. Designing graceful degradation paths is a production skill.</p>
+
+        <hr>
+
+        <h2>The RAG Chatbot</h2>
+
+        <p>RAG &mdash; Retrieval-Augmented Generation &mdash; is the most in-demand AI architecture right now. Every company building LLM-powered features uses some version of it. And the gap between "I understand how RAG works" and "I built a RAG system that queries real data and streams responses to a real frontend" is exactly the kind of gap that separates candidates.</p>
+
+        <p>NovaMart's chatbot implements the full RAG pipeline:</p>
+
+        <p><strong>Step 1: Embed the question.</strong> When a user types "I need headphones that won't fall out during a workout," the system converts the question into an embedding using the same model used for products.</p>
+
+        <p><strong>Step 2: Retrieve relevant products.</strong> That embedding gets searched against the product catalog via pgvector. The top 5 most relevant products are retrieved, with their descriptions, prices, ratings, and reviews.</p>
+
+        <p><strong>Step 3: Build context.</strong> The retrieved products are assembled into a structured context document &mdash; the "retrieval" part of RAG. This is what grounds the LLM's response in real data instead of letting it hallucinate.</p>
+
+        <p><strong>Step 4: Generate a response.</strong> The context and the user's question are sent to Azure OpenAI's GPT-4o-mini with a carefully crafted system prompt. The model generates a natural-language response that references specific products, explains why they're relevant, and gives genuinely useful shopping advice.</p>
+
+        <p><strong>Step 5: Stream it.</strong> The response streams back to the frontend via Server-Sent Events (SSE), word by word. The user sees the chatbot "typing" in real time, which makes the interaction feel responsive instead of staring at a loading spinner.</p>
+
+        <p>The entire round trip takes a couple of seconds. The chatbot remembers conversation context within a session, so follow-up questions work naturally. "Show me running shoes." "Something cheaper." "Does that one have good reviews?" Each message builds on the last.</p>
+
+        <p>Building this taught me skills that are immediately relevant to any company shipping LLM features:</p>
+
+        <p><strong>Prompt engineering is real engineering.</strong> The system prompt matters enormously. Too permissive and the model hallucinates products that don't exist. Too restrictive and the responses feel robotic. Finding the right balance through iteration is a craft.</p>
+
+        <p><strong>Streaming changes everything.</strong> SSE streaming is how every production chatbot works (ChatGPT, Copilot, you name it). Implementing it end-to-end &mdash; from the API layer through to the React frontend &mdash; is a full-stack skill that crosses the boundary between ML and software engineering.</p>
+
+        <p><strong>Context window management is a constraint.</strong> With 5 retrieved products, their descriptions, and conversation history, token counts add up fast. Learning to manage context windows efficiently &mdash; what to include, what to truncate, when to summarize &mdash; is a practical LLM engineering skill.</p>
+
+        <p><strong>Cost awareness matters.</strong> I chose GPT-4o-mini deliberately. It's fast, capable, and costs a fraction of what GPT-4o does. Making architecture decisions that balance capability against cost is how real engineering teams operate. The admin dashboard tracks token consumption and LLM costs so that spending stays visible.</p>
+
+        <hr>
+
+        <h2>Similar Products</h2>
+
+        <p>Every product page has a "You might also like" section. In most stores, this is either random or crudely correlated ("you looked at a laptop, here are more laptops"). NovaMart's version uses the same embedding infrastructure as the search.</p>
+
+        <p>Since every product already has a 1,536-dimensional embedding, finding similar products is a nearest-neighbor lookup: "what's closest to this product in vector space?"</p>
+
+        <p>The results capture thematic relationships that go beyond simple category matching. A camping tent surfaces sleeping bags, camp stoves, and hiking boots. A recipe book surfaces kitchen utensils and ingredient organizers. The embeddings encode semantic relationships that would be impossible to capture with hand-written rules.</p>
+
+        <p>This is a small feature, but it exercises an important skill: reusing ML infrastructure across multiple product features. The embedding generation pipeline, the pgvector storage, and the similarity search logic are shared between semantic search, the chatbot's retrieval step, and the similar products feature. Building shared ML infrastructure that serves multiple downstream use cases is how ML platforms work at scale.</p>
+
+        <hr>
+
+        <h2>Production Monitoring</h2>
+
+        <p>Here's a truth about ML in production that no college course prepares you for: training a model is the easy part. Keeping it working over time is the hard part.</p>
+
+        <p>Models are trained on historical data. When the real world drifts away from that history, predictions degrade. A recommendation engine trained on summer shopping patterns gives irrelevant suggestions in December. A demand forecaster trained before a trend goes viral underestimates demand by orders of magnitude.</p>
+
+        <p>This is called data drift, and it's how ML systems silently fail. The model doesn't crash. It doesn't throw an error. It just gets worse, so gradually that nobody notices until customers complain or revenue drops.</p>
+
+        <p>I built a monitoring system for NovaMart that watches for this:</p>
+
+        <p><strong>Statistical drift detection.</strong> The system runs Kolmogorov-Smirnov tests on numerical features and chi-squared tests on categorical ones, comparing current data distributions against training data distributions. When distributions diverge beyond a threshold, the system flags it with severity levels.</p>
+
+        <p><strong>Model performance tracking.</strong> Each model's key metrics (precision, recall, NDCG for recommendations; MAPE, RMSE for forecasting; silhouette score for segmentation) are tracked and displayed on the admin dashboard. Degradation over time is visible at a glance.</p>
+
+        <p><strong>Embedding coverage monitoring.</strong> What percentage of products have embeddings, broken down by category? If a new batch of products gets loaded without embeddings, the coverage drops and the admin dashboard shows it immediately. This prevents the semantic search and chatbot from silently degrading as new products are added.</p>
+
+        <p><strong>System health metrics.</strong> Database size, record counts, API response times. The operational metrics that keep a system running.</p>
+
+        <p><strong>OpenTelemetry instrumentation.</strong> Every API request is traced end-to-end &mdash; how long it took, what services it touched, where time was spent. If semantic search slows down, the traces show whether the bottleneck is the embedding generation, the vector query, or the API logic.</p>
+
+        <p>The admin dashboard at <code>/admin</code> shows all of this: sales trends, customer segment distributions, model performance cards, drift summaries with color-coded severity (green/yellow/red), and embedding coverage stats.</p>
+
+        <p>None of this is visible to the shopper. They just see a store that works. But behind the curtain, there's a monitoring system that ensures "works" stays true over time. This is MLOps &mdash; and it's the skill set that companies are most desperate to hire for, because almost nobody learns it in school.</p>
+
+        <hr>
+
+        <h2>The Full Picture</h2>
+
+        <p>Standing back, NovaMart covers an enormous surface area of practical AI/ML skills:</p>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Skill Category</th>
+              <th>What NovaMart Implements</th>
+              <th>Where You'd Use This</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Data Engineering</strong></td>
+              <td>ETL pipelines, Prefect orchestration, Great Expectations validation</td>
+              <td>Every data-driven company</td>
+            </tr>
+            <tr>
+              <td><strong>Data Warehousing</strong></td>
+              <td>dbt (staging, intermediate, marts), 15 automated tests</td>
+              <td>Analytics and ML teams</td>
+            </tr>
+            <tr>
+              <td><strong>Traditional ML</strong></td>
+              <td>Collaborative filtering, K-Means, LightGBM, Prophet</td>
+              <td>Recommendations, forecasting, segmentation roles</td>
+            </tr>
+            <tr>
+              <td><strong>Experiment Tracking</strong></td>
+              <td>MLflow with full parameter and metric logging</td>
+              <td>Any ML team</td>
+            </tr>
+            <tr>
+              <td><strong>Vector Embeddings</strong></td>
+              <td>text-embedding-3-small, pgvector storage and search</td>
+              <td>Search, recommendations, any NLP role</td>
+            </tr>
+            <tr>
+              <td><strong>Semantic Search</strong></td>
+              <td>Cosine similarity over 32,951 product embeddings</td>
+              <td>E-commerce, enterprise search, information retrieval</td>
+            </tr>
+            <tr>
+              <td><strong>RAG / LLM Engineering</strong></td>
+              <td>Retrieval-augmented generation with GPT-4o-mini, SSE streaming</td>
+              <td>Any company building LLM features</td>
+            </tr>
+            <tr>
+              <td><strong>MLOps / Monitoring</strong></td>
+              <td>Drift detection, performance tracking, OpenTelemetry</td>
+              <td>Production ML teams</td>
+            </tr>
+            <tr>
+              <td><strong>Full-Stack Integration</strong></td>
+              <td>Next.js frontend consuming ML-powered APIs</td>
+              <td>Applied ML / ML engineering roles</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p>Every one of these appears on job descriptions for entry-level AI/ML engineers. None of them are adequately taught in college. Building them as part of a single, integrated system made each skill concrete instead of theoretical.</p>
+
+        <hr>
+
+        <h2>The Uncomfortable Truth &mdash; And What To Do About It</h2>
+
+        <p>The AI/ML industry has a chicken-and-egg problem. Entry-level positions require practical experience. Practical experience requires a position &mdash; or, traditionally, an internship at a company that uses these tools in production.</p>
+
+        <p>But that's not the only path. The tools are all open source or have free tiers. The data is publicly available. The documentation is excellent. The only thing missing is a reason to use them all together &mdash; a project with enough complexity to demand real engineering, not just toy exercises.</p>
+
+        <p>E-commerce gave me that reason. It naturally requires recommendation engines, search systems, data pipelines, forecasting, segmentation, LLM integration, and production monitoring. It forced me to make real architectural decisions, handle real data quality issues, and build systems that work end-to-end.</p>
+
+        <p>If you're in the same position I was &mdash; strong on theory, short on practical ML engineering experience &mdash; the approach isn't complicated:</p>
+
+        <ol>
+          <li><strong>Pick a domain</strong> that naturally requires multiple ML skills. E-commerce, healthcare analytics, content platforms, financial services &mdash; anything with real complexity.</li>
+          <li><strong>Use real data.</strong> Kaggle, government open data, public APIs. The messier, the better.</li>
+          <li><strong>Build the whole system</strong>, not just the model. Pipeline, warehouse, training, serving, monitoring. The model is maybe 20% of the work.</li>
+          <li><strong>Use industry tools.</strong> dbt, MLflow, Prefect, pgvector, FastAPI. These are what companies use. Learning them on a real project is infinitely more valuable than reading their docs.</li>
+          <li><strong>Track and document everything.</strong> Experiment tracking, model cards, honest metric reporting. This demonstrates engineering maturity.</li>
+          <li><strong>Monitor in production.</strong> Even if "production" is your laptop. Drift detection and performance tracking show that you understand the ML lifecycle beyond training.</li>
+        </ol>
+
+        <p>The skills gap is real, but it's not insurmountable. You don't need an internship at a FAANG company to learn production ML engineering. You need a project ambitious enough to demand it.</p>
+
+        <p>NovaMart was mine. Build yours.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="part2-the-data-layer.html">&larr; Part 2: The Data Layer</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

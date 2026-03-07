@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The AI Skills Gap That College Won't Close (Part 1) &mdash; NovaMart Blog &mdash; Munyaradzi Comfort Zhou</title>
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>The AI Skills Gap That College Won't Close</h1>
+        <p class="meta">NovaMart Series &middot; Part 1 of 3</p>
+      </div>
+      <div class="post-content">
+
+        <p><em>This is Part 1 of a 3-part series on building NovaMart, a full-stack AI-powered e-commerce platform. It's the story of how I built my own training ground to learn the production ML engineering skills that entry-level job postings demand but college courses never teach.</em></p>
+
+        <hr>
+
+        <h2>The Resume Problem</h2>
+
+        <p>Here's something nobody tells you when you're studying AI and machine learning in college: the skills that get you hired are almost never the skills you learn in a lecture hall.</p>
+
+        <p>I realized this the hard way. I'd spent years studying machine learning theory &mdash; loss functions, backpropagation, gradient descent, the mathematics of SVMs. I could derive the closed-form solution for linear regression on a whiteboard. I could explain the bias-variance tradeoff in my sleep. But when I started looking at entry-level AI/ML engineer job postings, I kept hitting the same wall.</p>
+
+        <p><em>"Experience building recommendation systems." "Familiar with production ML pipelines." "Built and deployed models on real data." "Experience with feature stores, experiment tracking, and model monitoring."</em></p>
+
+        <p>Where exactly was I supposed to get that experience?</p>
+
+        <hr>
+
+        <h2>The Internship Problem</h2>
+
+        <p>The uncomfortable truth about breaking into AI/ML engineering is that the experience employers want lives almost exclusively inside companies. You learn to build recommendation engines at Amazon. You learn production ML pipelines at Spotify. You learn model monitoring at Netflix. You learn to handle messy real-world data at any company that actually has customers.</p>
+
+        <p>College gives you the theory. Internships give you the practice. But internships are competitive, gatekept, and &mdash; for many people &mdash; simply not accessible. If you didn't land that one summer placement at a tech company, you're left with a degree full of theory and a resume full of Jupyter notebooks that trained MNIST classifiers.</p>
+
+        <p>Kaggle competitions help, but they're isolated exercises. You download a clean dataset, optimize a metric, submit a CSV. You never deal with the messy reality of building a system end-to-end &mdash; ingesting raw data, cleaning it, storing it properly, training models, serving predictions, building a UI around them, and monitoring everything in production.</p>
+
+        <p>I needed a way to practice the full spectrum of skills that companies actually care about. Not toy exercises. Not another tutorial project. Something with real complexity, real data, and real engineering decisions.</p>
+
+        <p>So I built NovaMart.</p>
+
+        <hr>
+
+        <h2>Why E-Commerce?</h2>
+
+        <p>E-commerce is the perfect sandbox for practicing AI/ML engineering, and here's why: it naturally requires almost every skill on those intimidating job descriptions.</p>
+
+        <p><strong>Recommendation engines.</strong> Every online store needs them. "Customers who bought this also liked..." is collaborative filtering. "Products similar to what you're viewing" is content-based filtering. These aren't academic exercises when there's a real product catalog and real purchase history behind them.</p>
+
+        <p><strong>Demand forecasting.</strong> Predicting what's going to sell next week is a time-series problem with real business implications. It forces you to deal with seasonality, trends, and the humbling reality that your model's predictions are often wrong.</p>
+
+        <p><strong>Customer segmentation.</strong> Grouping users by behavior &mdash; who's a loyal buyer, who's a one-time visitor, who's about to churn &mdash; is unsupervised learning applied to real business questions. It's the kind of work that data science teams at actual companies do every day.</p>
+
+        <p><strong>Search and NLP.</strong> Product search is a natural language understanding problem. When someone types "comfortable shoes for long runs on pavement" and gets hiking boots, that's a failure of language understanding. Solving it with embeddings and semantic search is the kind of applied NLP work that's in massive demand right now.</p>
+
+        <p><strong>Data pipelines.</strong> Getting data from source to model isn't glamorous, but it's where ML engineers spend most of their time. ETL, data validation, data warehousing, feature engineering &mdash; all of it shows up naturally in an e-commerce context.</p>
+
+        <p><strong>MLOps and monitoring.</strong> Training a model once is a school project. Keeping a model healthy in production &mdash; detecting drift, tracking performance, knowing when to retrain &mdash; is what separates a student from an engineer.</p>
+
+        <p>An e-commerce platform isn't just one ML problem. It's a dozen of them, all interconnected, all demanding the kind of practical engineering that employers are desperate to find.</p>
+
+        <hr>
+
+        <h2>What NovaMart Actually Is</h2>
+
+        <p>NovaMart is a full-stack, AI-powered e-commerce platform. It's a working online store &mdash; you can browse products, search, add items to your cart, check out, leave reviews. But underneath the storefront, it's a complete ML engineering playground.</p>
+
+        <p>The numbers give a sense of scale:</p>
+
+        <ul>
+          <li><strong>32,951 products</strong> across 73 categories</li>
+          <li><strong>82,844 customers</strong> with real purchase histories</li>
+          <li><strong>85,861 orders</strong> from a real Brazilian e-commerce marketplace</li>
+          <li><strong>3 trained ML models</strong> (recommendations, forecasting, segmentation)</li>
+          <li><strong>32,951 product embeddings</strong> for semantic search</li>
+          <li><strong>A RAG chatbot</strong> that searches the catalog and answers questions in natural language</li>
+        </ul>
+
+        <p>The data is real. It comes from two public datasets &mdash; the Olist Brazilian E-Commerce dataset (about 100,000 actual orders with timestamps, payments, reviews, delivery tracking) and Amazon product reviews. No fake seed data. Real purchase records from real customers, with all the messiness that implies.</p>
+
+        <hr>
+
+        <h2>The Stack &mdash; And Why Each Choice Matters</h2>
+
+        <p>Every technology choice in NovaMart maps to something you'd see in a real company's ML infrastructure.</p>
+
+        <p><strong>Next.js 15 with React 19</strong> for the storefront. Modern frontend frameworks are the industry standard, and building a real UI around ML predictions forces you to think about how models serve users, not just how they score on a test set.</p>
+
+        <p><strong>FastAPI</strong> for the backend. It's what most ML teams use to serve predictions because it's Python-native, async, and fast. When the chatbot needs to stream responses or the search needs to return results in milliseconds, FastAPI handles it.</p>
+
+        <p><strong>PostgreSQL with pgvector</strong> for the database. This is the same stack that companies use for vector search in production. Storing 32,951 product embeddings alongside traditional relational data and querying them with cosine similarity &mdash; that's a skill that's directly transferable to any company building AI-powered search.</p>
+
+        <p><strong>dbt</strong> for the data warehouse. The industry-standard tool for transforming raw data into analytics-ready tables. Learning dbt on a real project is worth more than any certification.</p>
+
+        <p><strong>MLflow</strong> for experiment tracking. Every model training run is logged &mdash; hyperparameters, metrics, artifacts. This is how ML teams at real companies manage their model lifecycle, and it's a skill most college programs never touch.</p>
+
+        <p><strong>Prefect</strong> for pipeline orchestration. Automating the flow from raw data to trained model, with retries, logging, and error handling. This is the unglamorous plumbing that makes ML work in practice.</p>
+
+        <p>The whole thing lives in a monorepo &mdash; frontend, backend, pipelines, models, infrastructure &mdash; organized the way a real engineering team would structure it.</p>
+
+        <hr>
+
+        <h2>What This Series Covers</h2>
+
+        <p>This is a three-part series, and each part maps to a different cluster of skills that entry-level AI/ML roles demand:</p>
+
+        <p><strong><a href="part2-the-data-layer.html">Part 2: The Data Layer</a></strong> &mdash; ETL pipelines, data validation, data warehousing with dbt, customer segmentation, collaborative filtering, demand forecasting, and experiment tracking with MLflow. This is the data engineering and traditional ML side of the house.</p>
+
+        <p><strong><a href="part3-the-intelligence-layer.html">Part 3: The Intelligence Layer</a></strong> &mdash; Vector embeddings, semantic search with pgvector, RAG-powered chatbot with streaming, LLM integration, and production monitoring with drift detection. This is the GenAI and MLOps side.</p>
+
+        <p>Together, they cover the ground that sits between "I took an ML course" and "I can build ML systems." That's the gap that NovaMart was built to close.</p>
+
+        <hr>
+
+        <h2>Who This Is For</h2>
+
+        <p>If you're an AI/ML student staring at job postings that ask for experience you don't have, this series is for you. Not because you should copy NovaMart &mdash; but because the approach works. Pick a domain that naturally requires multiple ML skills. Use real data. Build the whole system, not just the model. Track your experiments. Monitor your predictions. Deploy something that actually works.</p>
+
+        <p>The skills gap between college and industry isn't about intelligence or talent. It's about exposure. Companies use recommendation engines, data pipelines, experiment tracking, and model monitoring every day. College teaches you the math behind them. The middle ground &mdash; actually building these things &mdash; is where the learning happens.</p>
+
+        <p>NovaMart is my middle ground.</p>
+
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-the-data-layer.html">Part 2: The Data Layer &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

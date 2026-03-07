@@ -120,6 +120,17 @@ img {
   text-align: left;
 }
 
+/* Nav profile photo */
+.nav-photo {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 2px solid var(--color-accent);
+  margin-left: var(--space-lg);
+  flex-shrink: 0;
+}
+
 .hero h1 {
   font-size: var(--font-size-3xl);
   font-weight: 700;
@@ -413,12 +424,17 @@ img {
     display: flex;
   }
 
+  .nav-photo {
+    display: none;
+  }
+
   .hero h1 {
     font-size: var(--font-size-2xl);
   }
 
   .social-links {
     flex-wrap: wrap;
+    justify-content: center;
   }
 
   .blog-entry {
