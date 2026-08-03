@@ -29,9 +29,11 @@
   <main class="container">
     <h1 class="section-title">Projects</h1>
     <p style="color: var(--color-text-light); margin-bottom: var(--space-2xl); max-width: 700px;">
-      Five systems demonstrating end-to-end capability in conversational AI: three focused on agriculture
+      Six systems demonstrating end-to-end capability in conversational AI: three focused on agriculture
       (streaming analytics, knowledge retrieval, robot planning), one on customer intelligence with explainable AI,
-      and one on temporal knowledge graphs for football analytics with multi-agent orchestration.
+      one on temporal knowledge graphs for football analytics with multi-agent orchestration, and one
+      production-grade multi-agent RAG service deployed on AWS with full MLOps — infrastructure-as-code,
+      keyless CI/CD, evaluation gates, and observability.
     </p>
 
     <div class="card-grid">
@@ -199,6 +201,68 @@
           <a href="https://github.com/munyaradzi-zhou/cropcommand" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
           &nbsp;&nbsp;
           <a href="blog/cropcommand/part1-nl-to-plans.html" style="font-weight: 500;">Read blog series &rarr;</a>
+        </div>
+      </div>
+
+      <!-- ProvenanceAgent -->
+      <div class="card" id="provenanceagent">
+        <h3>ProvenanceAgent</h3>
+        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
+          Production Multi-Agent RAG with Grounding Verification &amp; Full MLOps
+        </p>
+        <p>
+          A production-grade, cloud-deployed multi-agent RAG service. An LLM supervisor routes each
+          question to a Neo4j knowledge graph and/or a Qdrant vector store, a synthesis step writes a
+          concise, cited answer, and an LLM grader verifies every claim against the retrieved context
+          before it is returned — with a bounded self-repair loop that broadens retrieval when a claim
+          is ungrounded. Built for reliable multi-hop question answering over the 2WikiMultihopQA corpus,
+          where the answer requires chaining facts across separate passages.
+        </p>
+        <p>
+          The emphasis is production engineering: the entire stack is deployed on AWS ECS Fargate behind
+          an Application Load Balancer and an HTTPS API Gateway, provisioned 100% through Terraform, and
+          shipped via keyless GitHub Actions CI/CD (OIDC — no long-lived cloud keys). A RAGAS faithfulness
+          gate runs in CI and blocks regressions; graph + routing measurably beats a flat-vector baseline
+          (faithfulness 0.65 vs 0.53). Load-tested at 1,013 requests / 0 errors, p95 ≈ 1.2 s, at roughly
+          $0.0004 per query.
+        </p>
+
+        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>LangGraph state machine: redact &rarr; supervisor (LLM router) &rarr; graph / vector agents &rarr; synthesis &rarr; LLM grader &rarr; bounded repair loop</li>
+          <li>Hybrid retrieval: schema-aware text-to-Cypher over Neo4j (read-only guarded) + ANN vector search over Qdrant (cosine)</li>
+          <li>Grounding verification: LLM-as-judge grader checks every claim against context; self-repair re-routes on ungrounded answers (anti-hallucination)</li>
+          <li>Deployed on AWS ECS Fargate (ALB + API Gateway HTTPS, Secrets Manager, VPC) — 100% Terraform infrastructure-as-code</li>
+          <li>Keyless CI/CD: GitHub Actions + OIDC &rarr; ECR &rarr; zero-downtime rolling ECS deploy, gated by a RAGAS faithfulness threshold</li>
+          <li>Observability &amp; safety: Microsoft Presidio PII redaction (first node), Langfuse per-node tracing, CloudWatch EMF dashboards, MLflow + DVC for reproducible eval and data</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Technical Contributions</h4>
+        <p style="font-style: italic;">
+          Implements the provenance-tracking and anti-hallucination backbone at production grade —
+          grounded, cited, verified multi-hop answers with full deployment, evaluation, and observability.
+          Directly transferable to the trustworthy, auditable conversational systems that agricultural
+          decision support in Position-L demands.
+        </p>
+
+        <div class="tags" style="margin-top: var(--space-lg);">
+          <span class="tag tag--accent">Multi-Agent RAG</span>
+          <span class="tag">Python</span>
+          <span class="tag">LangGraph</span>
+          <span class="tag">Neo4j</span>
+          <span class="tag">Qdrant</span>
+          <span class="tag">RAGAS</span>
+          <span class="tag">AWS (ECS Fargate)</span>
+          <span class="tag">Terraform</span>
+          <span class="tag">GitHub Actions (OIDC)</span>
+          <span class="tag">Langfuse</span>
+          <span class="tag">FastAPI</span>
+          <span class="tag">Docker</span>
+          <span class="tag">Provenance Tracking</span>
+        </div>
+
+        <div style="margin-top: var(--space-lg);">
+          <a href="https://github.com/munyaradzi-zhou/provenance-agent" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
         </div>
       </div>
 
