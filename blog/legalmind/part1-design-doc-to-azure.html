@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Everything that broke between `az login` and a working URL &mdash; LegalMind on Azure &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="I had a forty-page design for an AI legal assistant and a brand-new Azure subscription. Getting to a working URL took one long day and taught me that the design document had been confidently wrong abo">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Everything that broke between `az login` and a working URL</h1>
+        <p class="meta">LegalMind on Azure · Part 1 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — I had a forty-page design for an AI legal assistant and a brand-new Azure subscription. Getting to a working URL took one long day and taught me that the design document had been confidently wrong about models, quota, regions, my own laptop, and my own Dockerfile. Here's every failure, what it looked like, and the habit it left me with.</p>
+</blockquote>
+<hr />
+<p>I had a design document. Forty pages of architecture for <strong>LegalMind</strong>, an assistant that answers Dutch legal questions from a firm's own documents — insurance policies, case files, letters — with citations. Multi-agent orchestration, hybrid search, guardrails, Infrastructure as Code for everything, CI/CD. On paper, it was finished.</p>
+<p>Then I opened a fresh Azure Free Trial and tried to make it real.</p>
+<p>By the end of the day there were <strong>18 resources</strong> running in one resource group and a URL that answered questions. Getting there was a sequence of small failures. None of them were exotic. All of them are worth knowing <em>before</em> you start.</p>
+<p><img loading="lazy" alt="The 18 resources of the dev environment in the Azure Resource visualizer" src="../../assets/legalmind/resource-visualizer.png" />
+<em>Eighteen resources: two Container Apps, Azure OpenAI, AI Search, four AI services, Cosmos DB, Storage, Key Vault, a registry, API Management, monitoring — and one managed identity tying them together.</em></p>
+<h2>1. The model I designed for didn't exist for me</h2>
+<p>The design said <code>gpt-4o-mini</code>. Azure said <code>InsufficientQuota</code>.</p>
+<p>The first lesson of Azure OpenAI: <strong>access to a model is not the same as quota for it.</strong> Quota is a number per subscription, per region, per model, <em>per deployment type</em>. One command shows it:</p>
+<pre><code class="language-bash">az cognitiveservices usage list -l eastus2 -o table
+</code></pre>
+<p>My Free Trial had <strong>zero</strong> Global Standard quota for gpt-4o-mini — and 200,000 tokens per minute for gpt-4.1-mini. Fine, I thought, I'll use the Standard deployment type instead. That failed too, with a different message: <code>ServiceModelDeprecated</code>. The model version in my template had been deprecated months earlier.</p>
+<p>Models have lifecycles — generally available, legacy, deprecated, retired — and a deprecated version can't be newly deployed even if existing deployments still work. I moved to <strong>gpt-4.1-mini</strong> (version 2025-04-14), made the model and version template parameters, and added a habit: check <code>lifecycleStatus</code> before choosing.</p>
+<h2>2. The region ran out of search</h2>
+<p>Next, Azure AI Search failed to provision. East US 2 had no capacity for new Basic search services that day. Nothing in my template was wrong — the region was full.</p>
+<p>The fix was one parameter, <code>searchLocation</code>. Search now lives in <strong>Central US</strong>; everything else stays in East US 2. Cross-region latency is a few milliseconds; a model call is a second. Nobody notices.</p>
+<p><em>Habit: every region in a template is a parameter. "One region for everything" is an assumption, and assumptions fail.</em></p>
+<h2>3. My laptop was the first enemy</h2>
+<p>Before Azure could fail, my machine did. Every <code>az</code>, <code>pip</code> and <code>docker</code> command died with <code>CERTIFICATE_VERIFY_FAILED</code>.</p>
+<p>The certificate chain presented for <code>management.azure.com</code> was signed by… my VPN. Its threat-protection feature inspects TLS by re-signing traffic with its own root certificate — trusted by Windows, unknown to Python's certificate bundle and to Linux containers.</p>
+<p>The fix:</p>
+<ul>
+<li>export the Windows trust store to a PEM file and point <code>REQUESTS_CA_BUNDLE</code> / <code>SSL_CERT_FILE</code> at it;</li>
+<li>in the app, use the OS trust store directly (<code>truststore</code>);</li>
+<li>for Docker builds, pass the certificate as a <strong>BuildKit secret</strong>, so <code>pip install</code> can use it but it never ends up in an image layer.</li>
+</ul>
+<p>What <em>not</em> to do: <code>verify=False</code>. That turns a configuration problem into a security hole.</p>
+<h2>4. Syntactically perfect, semantically wrong</h2>
+<p>Three Infrastructure-as-Code surprises, each about checking what you actually <em>sent</em> rather than what you <em>wrote</em>:</p>
+<p><strong>Key-auth settings with keys disabled.</strong> I'd disabled key authentication on AI Search (<code>disableLocalAuth: true</code>) — and also left an <code>authOptions</code> block that configures key authentication. The API rejected the combination.</p>
+<p><strong>Multi-line strings don't interpolate.</strong> My API Management rate-limit policy was a multi-line Bicep string containing <code>calls="${rateLimitPerMinute}"</code>. Bicep's <code>'''…'''</code> strings are verbatim, so APIM received the literal text <code>${rateLimitPerMinute}</code> and rejected the XML. The fix:</p>
+<pre><code class="language-bicep">value: replace('''&lt;policies&gt; … &lt;rate-limit calls=&quot;__RATE_LIMIT__&quot; renewal-period=&quot;60&quot; /&gt; … &lt;/policies&gt;''',
+               '__RATE_LIMIT__', string(rateLimitPerMinute))
+</code></pre>
+<p><strong>The placeholder port.</strong> On the very first deployment my images didn't exist yet, so the Container Apps ran Microsoft's placeholder image on port 80. When I swapped in my image, only the <em>image</em> changed — the port and the (absent) health probes stayed. Every revision failed its health checks. Now image, port and probes are set together, in one place.</p>
+<h2>5. The container that couldn't find itself</h2>
+<p>My first real container crashed on start:</p>
+<pre><code class="language-text">exec /app/venv/bin/uvicorn: no such file or directory
+</code></pre>
+<p>The file existed. The problem was its first line:</p>
+<pre><code class="language-text">#!/build/venv/bin/python
+</code></pre>
+<p>I'd built the virtual environment at <code>/build/venv</code> in the builder stage and copied it to <code>/app/venv</code> in the runtime stage. Python's console scripts hard-code their interpreter path, so <code>uvicorn</code> pointed at a directory that only existed in the builder. Building the venv at the same path in both stages fixed it.</p>
+<p>And CI changed: it now <strong>starts the image and calls <code>/health</code></strong>. "It builds" is not "it runs".</p>
+<h2>6. Azure's own limits</h2>
+<p>Two more, both from reading documentation <em>after</em> the error instead of before:</p>
+<ul>
+<li><strong>Azure AI Language</strong> accepts at most <strong>5 documents of 5,120 characters</strong> per synchronous request. My ingestion sent every chunk of a document in one call. Batching fixed it.</li>
+<li>Documents went missing from search. The Python SDK's <code>SearchableField</code> silently <strong>ignores</strong> <code>type=Collection(String)</code>, so my <code>entities</code> field was created as a plain string. Uploading a list into it made Azure reject the <strong>entire batch</strong> — whole documents vanished. The fix is <code>collection=True</code>, plus a unit test that checks the schema, because the service did exactly what the code said, not what I meant.</li>
+</ul>
+<h2>What I'd tell myself that morning</h2>
+<blockquote>
+<p><strong>Takeaways</strong>
+1. Check quota <em>and</em> model lifecycle before writing a single line of template.
+2. Make every region a parameter.
+3. Read errors literally — <code>InsufficientQuota</code> and <code>ServiceModelDeprecated</code> said exactly what was wrong.
+4. After creating anything, read it back from the service and compare with what you meant.
+5. Test the artefact you ship, not just the code that produced it.</p>
+</blockquote>
+<p>By evening the URL answered questions. Then I started measuring — and found out the system didn't do what I thought it did. That's <a href="part2-the-guard-that-failed-open.html">Part 2</a>.</p>
+<hr />
+<p><em>LegalMind AI is open source: <a href="https://github.com/munyaradzi-zhou/LegalMind-AI">github.com/munyaradzi-zhou/LegalMind-AI</a>. The sample organisation and documents are fictional; LegalMind is a demonstration, not legal advice.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="../../blogs.html">&larr; Back to Blog</a>
+        <a href="part2-the-guard-that-failed-open.html">Part 2: The guard that failed open &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -29,7 +29,8 @@
   <main class="container">
     <h1 class="section-title">Projects</h1>
     <p style="color: var(--color-text-light); margin-bottom: var(--space-2xl); max-width: 700px;">
-      Six systems demonstrating end-to-end capability in conversational AI: three focused on agriculture
+      Seven systems demonstrating end-to-end capability in conversational AI: a multi-agent legal assistant
+      deployed and measured on Azure, three focused on agriculture
       (streaming analytics, knowledge retrieval, robot planning), one on customer intelligence with explainable AI,
       one on temporal knowledge graphs for football analytics with multi-agent orchestration, and one
       production-grade multi-agent RAG service deployed on AWS with full MLOps — infrastructure-as-code,
@@ -37,6 +38,71 @@
     </p>
 
     <div class="card-grid">
+
+      <!-- LegalMind AI -->
+      <div class="card" id="legalmind">
+        <h3>LegalMind AI</h3>
+        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
+          Multi-Agent Legal Case Assistant on Azure, Deployed and Measured
+        </p>
+        <p>
+          Answers Dutch legal questions from an organisation's own documents &mdash; insurance policies, case files,
+          correspondence &mdash; with numbered citations, and tells the user whether each answer is actually backed
+          by those documents. An orchestrator routes each question to one of four Semantic Kernel agents (document
+          analysis, legal research, drafting, compliance); Azure AI Search retrieves chunks with hybrid BM25 + vector
+          search and a semantic ranker; every answer passes Content Safety, PII detection and an LLM groundedness
+          check that fails closed and labels the answer.
+        </p>
+        <p>
+          Built and run end to end on Azure: 18 resources defined in Bicep, one managed identity and no keys anywhere,
+          GitHub Actions CI/CD with OIDC, and Application Insights tracing. Evaluations against the live system drove
+          the fixes: the dashboards caught a groundedness check that failed open 52 times, and near-miss test questions
+          exposed answers that borrowed facts from the wrong document &mdash; solved by giving every chunk a header that
+          names its document.
+        </p>
+
+        <img src="assets/legalmind/app-map.png" alt="Application Insights application map of the deployed LegalMind API" loading="lazy"
+             style="display: block; max-width: 420px; width: 100%; border-radius: var(--radius-md); margin: var(--space-lg) 0;">
+
+        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Measured on the Live Deployment</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>Routing to the right specialist agent: 92% &rarr; 100% (24 labelled questions)</li>
+          <li>Right passage ranked first: 80% with hybrid + semantic ranker vs 49% keyword only</li>
+          <li>Expected facts in answers: 68% &rarr; 97%; groundedness 4.16 &rarr; 4.95 / 5; right source cited 100%</li>
+          <li>Unanswerable questions declined, including near-misses: 8 / 8</li>
+          <li><code>/api/chat</code> latency p50 / p95: 14.8 s / 39.5 s &rarr; 7.3 s / 15.7 s, by removing an LLM call that didn't help</li>
+          <li>Code-only releases in ~4 minutes, after one full-template deploy hung for 31</li>
+        </ul>
+
+        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
+        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
+          <li>FastAPI on Azure Container Apps (scale to zero), Streamlit UI, and an MCP server so other agents can use the knowledge base</li>
+          <li>Azure OpenAI gpt-4.1-mini + text-embedding-3-large; Azure AI Search hybrid retrieval with contextual chunk headers</li>
+          <li>Ingestion: Document Intelligence / Content Understanding &rarr; heading-aware chunking &rarr; AI Language enrichment &rarr; embeddings &rarr; index</li>
+          <li>Responsible AI: Content Safety, PII detection, a grounding label on every answer, audit trail in Cosmos DB</li>
+          <li>Bicep IaC, user-assigned managed identity, keyless GitHub Actions CI/CD, Application Insights + KQL</li>
+        </ul>
+
+        <div class="tags" style="margin-top: var(--space-lg);">
+          <span class="tag tag--accent">Multi-Agent RAG</span>
+          <span class="tag">Azure OpenAI</span>
+          <span class="tag">Azure AI Search</span>
+          <span class="tag">Semantic Kernel</span>
+          <span class="tag">FastAPI</span>
+          <span class="tag">Container Apps</span>
+          <span class="tag">Cosmos DB</span>
+          <span class="tag">Bicep</span>
+          <span class="tag">GitHub Actions (OIDC)</span>
+          <span class="tag">Application Insights</span>
+          <span class="tag">MCP</span>
+          <span class="tag">Responsible AI</span>
+        </div>
+
+        <div style="margin-top: var(--space-lg);">
+          <a href="https://github.com/munyaradzi-zhou/LegalMind-AI" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
+          <a href="blog/legalmind/part1-design-doc-to-azure.html" style="font-weight: 500; margin-left: var(--space-lg);">Read blog series &rarr;</a>
+        </div>
+      </div>
 
       <!-- FarmSmart -->
       <div class="card" id="farmsmart">

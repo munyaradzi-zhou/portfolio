@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Right number, wrong document &mdash; LegalMind on Azure &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="I wrote harder test questions: ones whose answer exists in the documents, but for a different policy or person. LegalMind answered them confidently, with citations — and my groundedness check called t">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Right number, wrong document</h1>
+        <p class="meta">LegalMind on Azure · Part 4 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — I wrote harder test questions: ones whose answer exists in the documents, but for a <em>different</em> policy or person. LegalMind answered them confidently, with citations — and my groundedness check called them grounded, because the numbers really were in the sources. Three rounds of making the check smarter caught one in three. One sentence of context on every chunk made the agent decline all of them. The fix was in the data, not the guard.</p>
+</blockquote>
+<hr />
+<p>After <a href="part2-the-guard-that-failed-open.html">Parts 2</a> and <a href="part3-measure-before-you-add-an-llm-call.html">3</a>, LegalMind looked good on paper: groundedness 4.8 out of 5, the right source cited every time, unanswerable questions declined. So I made the test harder.</p>
+<h2>The question with no answer</h2>
+<p>My test set had four "unanswerable" questions — things the documents simply don't cover, like a client's remaining holiday days. LegalMind declined them politely. Too easy. Real users don't ask about things that are absent. They ask about things that are <em>almost</em> there.</p>
+<p>So I wrote <strong>near-misses</strong>: questions whose answer exists in the corpus — but for a different policy, case or person.</p>
+<blockquote>
+<p><em>"Hoeveel bedraagt de premie van de reisverzekering?"</em> — How much is the travel insurance premium?</p>
+</blockquote>
+<p>There is no travel insurance in the documents. There is a legal-expenses insurance policy, and its premium is €180 a year. LegalMind answered:</p>
+<blockquote>
+<p><em>"De premie van de reisverzekering bedraagt €180,00 per jaar, inclusief assurantiebelasting [1]."</em>
+— The travel insurance premium is €180.00 per year, including insurance tax.</p>
+</blockquote>
+<p>Confident. Cited. Wrong. And my groundedness check — the guard from Part 2, now fixed and working — labelled it <strong>grounded</strong>. From its point of view, it was right: "€180 per year, including insurance tax" really is in source [1].</p>
+<p>Three more near-misses behaved the same way: the excess of a <em>health</em> insurance (the €250 belongs to the legal-expenses policy), the maximum cover of the <em>employer's</em> liability insurance (the €50,000 is, again, the legal-expenses policy), and a <em>colleague's</em> medical costs (the €3,500 are the client's own). The evaluation's judge, which reads the full documents, caught them. The app didn't.</p>
+<h2>Three rounds of fixing the guard</h2>
+<p>The obvious move was to make the check smarter. Over one evening:</p>
+<p><strong>Round 1 — give the checker the question.</strong> Until then it compared only answer and context, so it couldn't know the answer was about the wrong subject. In the same change I limited the sources shown to users to those the answer cites with <code>[n]</code> — and broke something. Answers also cite as "(art. 12.1a)" or "(Bron: polis.txt)", so correct answers lost all their sources. <em>Right source cited</em> fell from 100 % to 74 %. The evaluation caught it before anyone else did.</p>
+<p><strong>Round 2 — let the checker name the subject.</strong> It now writes down what the question is about — <em>"the premium of the travel insurance"</em> — decides whether the documents cover <em>that</em>, and reports which sources the answer relies on. Sources were back to 100 %. One near-miss in three was caught. But four <em>correct</em> refusals were now flagged — careful answers like <em>"there's no information about the construction company's lawyer; the lawyer mentioned represents the client, not the company"</em>, punished for mentioning a related fact.</p>
+<p><strong>Round 3 — only flag answers that present another subject's fact <em>as the answer</em>.</strong> The false alarms disappeared. Still one in three.</p>
+<p>I also tried making the checker <em>quote</em> the words in the context that name the subject, and verifying the quote in code. It made things worse: it paraphrased its quote on a correct answer (a false alarm) and, for the travel question, quoted real but irrelevant words (still passed). Reverted.</p>
+<p>One habit made this evening bearable: each version was first <strong>replayed against the real answers from the previous evaluation</strong> — a small script — before deploying. Two of the three problems were caught there, not in production.</p>
+<h2>Then I looked at what the checker actually sees</h2>
+<p>This is the chunk behind "€180":</p>
+<pre><code class="language-text">[1]
+Title: sample_insurance_policy_nl.txt | Type: contract | Section: ARTIKEL 6 - PREMIE
+ARTIKEL 6 - PREMIE
+6.1 De jaarpremie bedraagt €180,00 inclusief assurantiebelasting.
+</code></pre>
+<p>Read it as if you'd never seen the rest of the file. <em>Which</em> insurance is this? The title is a file name. The section says "premium". Nothing in the passage says <em>legal-expenses</em>. A careful human, handed only this, could not tell it isn't the travel policy. Neither could the model writing the answer, nor the model checking it.</p>
+<p><strong>A chunk cut out of its document loses its identity.</strong> I had spent an evening making the guard smarter when the information it needed wasn't in its input.</p>
+<h2>The fix was in the data</h2>
+<p>At ingestion, one extra model call per document writes a single sentence that identifies it, and that sentence is put above every chunk before it is embedded and indexed. (The technique is known as <em>contextual retrieval</em>.)</p>
+<pre><code class="language-text">Document: Dit is een rechtsbijstandverzekeringsovereenkomst tussen Verzekeraar Voorbeeld
+Rechtsbijstand N.V. en Verzekerde [Naam Verzekerde], met polisnummer VP-2024-001234,
+ingaand op 1 januari 2024.
+ARTIKEL 6 - PREMIE
+6.1 De jaarpremie bedraagt €180,00 inclusief assurantiebelasting.
+</code></pre>
+<p>Now keyword search, the embedding, the semantic ranker, the answering agent and the groundedness check all see which document a passage belongs to — with no change to the index schema.</p>
+<p>One detail mattered. My first prompt described the case file as coming from the <em>employer's insurer</em> — a party merely <em>mentioned</em> in it. A wrong header on every chunk would be worse than none, so the prompt now forbids inferring who wrote a document, and I read every generated header before trusting it. Generated metadata is model output; check it like any other.</p>
+<p>Re-ingesting now <em>replaces</em> a document's earlier chunks instead of duplicating them. After re-seeding, the index still held exactly 41 chunks.</p>
+<h2>The result</h2>
+<table>
+<thead>
+<tr>
+<th>27 questions</th>
+<th>Before headers</th>
+<th>With headers</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Expected facts in answers</td>
+<td>92 %</td>
+<td><strong>97 %</strong></td>
+</tr>
+<tr>
+<td>All expected facts present</td>
+<td>89 %</td>
+<td><strong>95 %</strong></td>
+</tr>
+<tr>
+<td>Groundedness (judge, 1–5)</td>
+<td>4.74</td>
+<td><strong>4.95</strong></td>
+</tr>
+<tr>
+<td>Unanswerable questions declined</td>
+<td>6 / 8</td>
+<td><strong>8 / 8</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The travel-insurance question now gets:</p>
+<blockquote>
+<p><em>"In de opgehaalde documenten is geen informatie gevonden over de premie van een reisverzekering. De beschikbare gegevens gaan over een rechtsbijstandverzekering met een premie van €180,00 per jaar [1]…"</em>
+— The documents contain no information about a travel insurance premium. The available information concerns a legal-expenses insurance with a premium of €180.00 per year.</p>
+</blockquote>
+<p>It declines — <em>and</em> attributes the €180 to the right policy. Not because the guard caught it, but because the agent could finally see what it was reading.</p>
+<p>A bonus I didn't design for: <em>"What are the next steps in the De Vries case?"</em> went from <strong>0 % to 100 %</strong> of expected facts. Before, search returned the policy's generic claims procedure; now the header names the case, and the case file's own <em>next actions</em> section wins.</p>
+<p>It's not free, and not magic. Passage-level ranking was mixed: the shared header makes chunks of <em>one</em> document look more alike, so the ranker's top-3 hit rate dropped while first place held. One correct refusal still gets a "not fully supported" label. But the failure that mattered — a confident, cited answer about the wrong policy — is gone.</p>
+<h2>The lesson</h2>
+<blockquote>
+<p><strong>Takeaways</strong>
+- Write near-miss test cases. Easy "unanswerable" questions said everything was fine; near-misses found the real problem.
+- A citation list is not proof. "Grounded" only means <em>the claim is in the context</em> — not that it's about the thing you asked.
+- When a check keeps failing, look at what information it <em>has</em>. Guardrails sit at the end of a pipeline; they can only verify what the pipeline gives them.
+- <strong>Fix the data before you tune the judge.</strong> One sentence per document beat three rounds of prompt engineering.
+- Replay a new guard on yesterday's real outputs before you deploy it.</p>
+</blockquote>
+<p>In <a href="part5-no-secrets-and-the-31-minute-deploy.html">Part 5</a>: how every one of these fixes reached Azure in four minutes, without a single secret.</p>
+<hr />
+<p><em>LegalMind AI is open source: <a href="https://github.com/munyaradzi-zhou/LegalMind-AI">github.com/munyaradzi-zhou/LegalMind-AI</a>. The sample organisation and documents are fictional; LegalMind is a demonstration, not legal advice.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part3-measure-before-you-add-an-llm-call.html">&larr; Part 3: Measure before you add an LLM call</a>
+        <a href="part5-no-secrets-and-the-31-minute-deploy.html">Part 5: No secrets, and the 31-minute deploy &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

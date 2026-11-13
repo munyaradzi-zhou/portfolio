@@ -282,6 +282,9 @@ code, .mono {
   flex-direction: column;
   color: var(--on-pastel-body);
 }
+.card-grid--pastel .card--wide {
+  grid-column: 1 / -1;
+}
 .card-grid--pastel .card:nth-child(3n+1) { background: var(--sage); }
 .card-grid--pastel .card:nth-child(3n+2) { background: var(--lilac); }
 .card-grid--pastel .card:nth-child(3n)   { background: var(--peach); }

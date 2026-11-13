@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Measure before you add an LLM call &mdash; LegalMind on Azure &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="Every RAG tutorial adds steps: rewrite the query, generate a hypothetical answer, re-rank, reflect. Each is another model call. I built three small evaluation sets and measured mine. The semantic rank">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Measure before you add an LLM call</h1>
+        <p class="meta">LegalMind on Azure · Part 3 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — Every RAG tutorial adds steps: rewrite the query, generate a hypothetical answer, re-rank, reflect. Each is another model call. I built three small evaluation sets and measured mine. The semantic ranker was the biggest win; LLM query rewriting cost 1.4 seconds and improved nothing; and end-to-end testing found a bug that perfect retrieval metrics had hidden. Removing a step halved the latency.</p>
+</blockquote>
+<hr />
+<p>LegalMind's pipeline had grown the way RAG pipelines do: every technique that sounded smart got a place. Query rewriting to expand legal abbreviations and translate English to Dutch. Hybrid search. A semantic re-ranker. Four specialist agents behind a router. A groundedness check. Each step was reasonable on its own. Together they made an answer take 15 seconds at the median and 40 at the tail.</p>
+<p>So I stopped arguing with myself and measured.</p>
+<h2>Three evaluations, against the live system</h2>
+<table>
+<thead>
+<tr>
+<th>Evaluation</th>
+<th>Data</th>
+<th>Measures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Retrieval</strong></td>
+<td>35 questions, each with the passage that must be found (30 Dutch, 5 English)</td>
+<td>Is the right passage first (hit@1)? In the top 3? Mean reciprocal rank; latency — for five search modes</td>
+</tr>
+<tr>
+<td><strong>Routing</strong></td>
+<td>24 messages, 6 per specialist agent</td>
+<td>Does each question reach the right agent?</td>
+</tr>
+<tr>
+<td><strong>Generation</strong></td>
+<td>23 questions through the live API (later 27): 19 answerable with expected facts, the rest unanswerable</td>
+<td>Facts found, right source cited, groundedness (an LLM judge reads the full documents), unanswerable questions declined</td>
+</tr>
+</tbody>
+</table>
+<p>None of this is big. The corpus is three fictional documents and 41 chunks. It still found a bug, a useless step and a routing flaw.</p>
+<h2>What retrieval taught me</h2>
+<table>
+<thead>
+<tr>
+<th>Search mode</th>
+<th>Right passage first</th>
+<th>In top 3</th>
+<th>Median latency</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Keyword (BM25)</td>
+<td>49 %</td>
+<td>69 %</td>
+<td>2.5 s</td>
+</tr>
+<tr>
+<td>Vector</td>
+<td>63 %</td>
+<td><strong>100 %</strong></td>
+<td>3.6 s</td>
+</tr>
+<tr>
+<td>Hybrid (keyword + vector, Reciprocal Rank Fusion)</td>
+<td>60 %</td>
+<td>89 %</td>
+<td>3.1 s</td>
+</tr>
+<tr>
+<td><strong>Hybrid + semantic ranker</strong></td>
+<td><strong>80 %</strong></td>
+<td>94 %</td>
+<td>3.1 s</td>
+</tr>
+<tr>
+<td>Hybrid + semantic + LLM query rewriting</td>
+<td>77 %</td>
+<td>91 %</td>
+<td><strong>4.5 s</strong></td>
+</tr>
+</tbody>
+</table>
+<p><em>(Latency measured from a laptop in Europe to Azure in the US — compare the rows with each other, not with production.)</em></p>
+<p>Three surprises.</p>
+<p><strong>The semantic ranker was the biggest single win.</strong> It re-reads the top candidates together with the question using a cross-encoder and reorders them. Right-passage-first went from 60 % to 80 %, at no latency I could measure.</p>
+<p><strong>Hybrid wasn't automatically better than vector.</strong> On a small corpus, vector search already put the right passage in the top three every time — even for English questions over Dutch documents, because the embeddings are multilingual. Fusing in keyword results sometimes pushed a better passage down. The ranker fixed the <em>order</em>. On a large corpus full of exact identifiers — article numbers, case numbers — hybrid's advantage grows; on mine, the ranker mattered more.</p>
+<p><strong>Query rewriting — an extra LLM call on every question — cost 1.4 seconds and improved nothing.</strong> The ranker and the multilingual embeddings already handled synonyms, abbreviations and language. Rewriting is now a setting, off by default.</p>
+<h2>What end-to-end evaluation taught me</h2>
+<p>Retrieval looked great: the right source was cited for <strong>100 %</strong> of answerable questions. But only <strong>68 %</strong> of expected facts made it into the answers.</p>
+<p>How can you cite the right document and miss what's in it?</p>
+<p>The per-question table pointed at one path: questions the router classified as "general" — not for any specialist. Reading that code: it built the retrieved context, attached the citations to the response… and called the model with <strong>only the question</strong>. The passages never reached the prompt. The citations under those answers were decoration.</p>
+<p>One-line fix. Groundedness <strong>4.16 → 4.95</strong> out of 5, facts <strong>68 % → 82 %</strong>.</p>
+<p>Routing had its own quiet flaw. <em>"Wat staat er in artikel 5?"</em> — what does article 5 say? — went to the <em>legal research</em> agent instead of <em>document analysis</em>. The routing prompt described what each agent does, but didn't say where the boundary was. It now has an explicit rule — <em>what a document says</em> versus <em>what the law says</em> — and routing went from <strong>92 % to 100 %</strong>.</p>
+<h2>Latency, halved</h2>
+<p>Server-side, from Application Insights, successful <code>POST /api/chat</code>:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>Median</th>
+<th>95th percentile</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Before</td>
+<td>14.8 s</td>
+<td>39.5 s</td>
+</tr>
+<tr>
+<td>After</td>
+<td><strong>7.3 s</strong></td>
+<td><strong>15.7 s</strong></td>
+</tr>
+</tbody>
+</table>
+<p>No faster model. No caching layer. One call removed (query rewriting), and one call that no longer failed and retried (the groundedness check from <a href="part2-the-guard-that-failed-open.html">Part 2</a>).</p>
+<p><img loading="lazy" alt="Azure OpenAI latency per call over 24 hours, around one second" src="../../assets/legalmind/openai-latency.png" />
+<em>The model answers in about a second per call. The other six seconds are calls in sequence: route, answer, check.</em></p>
+<p>The model itself answers in about a second. The rest of the time is <em>calls in sequence</em>: embed, search, route, answer, check. The next win is parallelism — run the groundedness check while the answer streams — not a bigger model.</p>
+<h2>A note on judging with a model</h2>
+<p>The generation scores come from an LLM judge: gpt-4.1-mini reads the full source documents and scores each answer. It's the same model family as the generator, which makes it lenient, and it's noisy — about ±0.2 on a 5-point scale between identical runs. In one run it marked a confidently wrong answer as a <em>refusal</em>. I read the per-question tables, not just the averages, and I treat a difference of one or two questions as noise.</p>
+<h2>The lesson</h2>
+<blockquote>
+<p><strong>Takeaways</strong>
+- Build the evaluation set first; argue about techniques second. Thirty-five retrieval questions and twenty-seven end-to-end questions were enough to make three decisions.
+- Measure every model call you add — some cost seconds and buy nothing.
+- Retrieval metrics and answer metrics measure different things. A system can find the right passage and still not use it.
+- Classification prompts need explicit rules for the boundary cases, and a labelled set to prove them.
+- Latency in an LLM app is usually the <em>number of calls in sequence</em>, not the speed of one.</p>
+</blockquote>
+<p>Then I made the test harder — and found a failure that no amount of guardrail tuning could fix. That's <a href="part4-right-number-wrong-document.html">Part 4</a>.</p>
+<hr />
+<p><em>LegalMind AI is open source: <a href="https://github.com/munyaradzi-zhou/LegalMind-AI">github.com/munyaradzi-zhou/LegalMind-AI</a>. The sample organisation and documents are fictional; LegalMind is a demonstration, not legal advice.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part2-the-guard-that-failed-open.html">&larr; Part 2: The guard that failed open</a>
+        <a href="part4-right-number-wrong-document.html">Part 4: Right number, wrong document &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

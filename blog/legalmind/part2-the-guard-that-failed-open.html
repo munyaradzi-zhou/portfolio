@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The hallucination guard that silently did nothing &mdash; LegalMind on Azure &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="LegalMind checks every answer against its sources before showing it. The check ran on every request and every test passed. Application Insights showed it had crashed 52 times — and each time, the code">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>The hallucination guard that silently did nothing</h1>
+        <p class="meta">LegalMind on Azure · Part 2 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — LegalMind checks every answer against its sources before showing it. The check ran on every request and every test passed. Application Insights showed it had crashed 52 times — and each time, the code reported the answer as <em>grounded</em>. A safety check that fails open is worse than none, because it makes you believe you're protected. Here's how I found it, the fix, and three other things the dashboards told me that no test would have.</p>
+</blockquote>
+<hr />
+<p>LegalMind has a safety net I was proud of. After a specialist agent writes an answer, a second model call — the <strong>groundedness check</strong> — compares every claim with the passages that were retrieved, and flags anything they don't support. In legal work an invented article number isn't a typo; it's a liability.</p>
+<p>The check ran on every answer. The unit tests passed. Then I opened Application Insights.</p>
+<h2>52 errors that never reached a user</h2>
+<p>The <strong>Failures</strong> blade showed <strong>52 × <code>JSONDecodeError</code></strong>.</p>
+<p><img loading="lazy" alt="Application Insights Failures blade showing 52 JSONDecodeErrors" src="../../assets/legalmind/failures-before.png" />
+<em>52 × <code>JSONDecodeError</code> — every one of them a groundedness check that crashed and reported "grounded".</em></p>
+<p>No user had seen an error. No request had failed. Drilling into one exception led straight to the guardrails module. The check asked the model for JSON in the prompt — but nothing <em>enforced</em> JSON, and now and then the reply wasn't something <code>json.loads</code> would accept: text around the object, a code fence, a truncated answer. Parsing failed. And then the <code>except</code> block did this:</p>
+<pre><code class="language-python">except Exception:
+    logger.exception(&quot;groundedness_check_error&quot;)
+    # Fail open — assume grounded if check fails
+    return GroundednessResult(
+        score=0.5,
+        is_grounded=True,
+        explanation=&quot;Groundedness check failed; assuming grounded.&quot;,
+    )
+</code></pre>
+<p>The comment even says it: <strong>fail open</strong>. Fifty-two times, the hallucination check broke and reported "grounded". If any of those 52 answers contained an invented reference, it reached the user with a clean bill of health — and the logs said everything was fine.</p>
+<h2>Why the tests didn't catch it</h2>
+<p>The unit tests mocked the model with tidy JSON. They tested what the code did when everything worked. Nobody — me included — had written the test <em>"what happens when the model returns something that isn't JSON?"</em>, because that failure mode wasn't in my head.</p>
+<p>It was only visible in production telemetry, where real model outputs are messy.</p>
+<h2>The fix: fail closed, or at least fail loud</h2>
+<p>Three changes:</p>
+<ol>
+<li><strong>Enforce the format.</strong> <code>response_format={"type": "json_object"}</code> puts the model in JSON mode.</li>
+<li><strong>Parse tolerantly.</strong> Strip code fences, find the outermost <code>{…}</code>, then parse.</li>
+<li><strong>Never pretend.</strong> If the check still fails, the answer is labelled <strong><code>unverified</code></strong>, the UI says so, and a warning is logged where an alert can find it.</li>
+</ol>
+<pre><code class="language-python">except Exception:
+    logger.exception(&quot;groundedness_check_error&quot;)
+    # Don't pretend the answer was checked: it is delivered, but flagged as unverified.
+    return GroundednessResult(score=0.0, is_grounded=False, verified=False,
+                              explanation=&quot;Groundedness check failed; the answer could not be verified.&quot;)
+</code></pre>
+<p>The next run: <strong>zero</strong> <code>JSONDecodeError</code>s.</p>
+<p>That label then grew into something users actually see. Every answer now carries <code>grounding: documents | not_grounded | unverified | no_documents</code>, and the UI shows a notice for the last three. A legal professional gets the answer <em>and</em> knows how far to trust it.</p>
+<p><img loading="lazy" alt="Failures blade after the fix: only deliberate 4xx errors from the traffic generator" src="../../assets/legalmind/failures-after.png" />
+<em>After the fix: the only failed requests are the deliberate 422s and 404s from the traffic generator.</em></p>
+<h2>What else the dashboards knew</h2>
+<p>Once I started looking, the <strong>application map</strong> had more to say.</p>
+<p><strong>My service was called <code>unknown_service:python</code>.</strong> OpenTelemetry names services from the <code>OTEL_SERVICE_NAME</code> environment variable; I'd never set it. One line in the Dockerfile.</p>
+<p><strong>There was a dependency I never designed: <code>openaipublic</code>.</strong> An Azure blob store, called from my API. It turned out <code>tiktoken</code> — the library I use to count tokens — downloads its token tables from a public storage account the first time it runs. So every cold start of my container depended on someone else's storage. The tables are now downloaded at build time and baked into the image.</p>
+<p><strong>A mysterious <code>localhost:12356</code></strong> turned out to be the best kind of surprise: the Container Apps managed-identity endpoint. My app fetching Entra ID tokens instead of using keys — visible on a map.</p>
+<p><img loading="lazy" alt="Application map over 48 hours: the old unnamed service with its openaipublic dependency, and the new legalmind-api" src="../../assets/legalmind/app-map-before-after.png" />
+<em>Two days in one picture: the old <code>unknown_service:python</code> (with <code>openaipublic</code>) and the new <code>legalmind-api</code> (without it).</em></p>
+<p><strong>And not every red number is a bug.</strong> The final run showed 59 "failed" Cosmos DB calls and 40 failed calls to Azure OpenAI. Grouping by result code explained both: the Cosmos ones were <strong>404s</strong> — the app reads a conversation before creating it, and new conversations don't exist yet — and the OpenAI ones were <strong>429s</strong>, rate limiting during a deliberate load burst. "Failed" in a dashboard means "not 2xx". Always group by result code before drawing conclusions.</p>
+<h2>The lesson</h2>
+<blockquote>
+<p><strong>Takeaways</strong>
+- Search your code for <code>except: … return True</code> — or <code>is_valid = True</code>, <code>allowed = True</code>. Every guardrail, validator and safety check has a failure path, and the instinct "don't break the user's request" quietly turns a safety feature into decoration.
+- A guard that fails open is worse than no guard: it makes you <em>believe</em> you're protected.
+- Make the failure visible — a label, a warning, an alert — rather than choosing between "block everything" and "pretend".
+- Open your dashboards before you think you're done. Tests tell you the code does what you expected. Telemetry tells you what it actually does.</p>
+</blockquote>
+<p>In <a href="part3-measure-before-you-add-an-llm-call.html">Part 3</a>, I stop guessing which parts of the pipeline help — and measure them.</p>
+<hr />
+<p><em>LegalMind AI is open source: <a href="https://github.com/munyaradzi-zhou/LegalMind-AI">github.com/munyaradzi-zhou/LegalMind-AI</a>. The sample organisation and documents are fictional; LegalMind is a demonstration, not legal advice.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part1-design-doc-to-azure.html">&larr; Part 1: Everything that broke</a>
+        <a href="part3-measure-before-you-add-an-llm-call.html">Part 3: Measure before you add an LLM call &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

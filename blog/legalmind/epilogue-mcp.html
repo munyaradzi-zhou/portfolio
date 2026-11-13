@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Epilogue: when the user is another AI &mdash; LegalMind on Azure &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="LegalMind is also an MCP server, so Claude, Copilot or an Azure AI Foundry agent can use the legal knowledge base as a tool. The server is a thin client of the same API, so every guardrail still appli">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Epilogue: when the user is another AI</h1>
+        <p class="meta">LegalMind on Azure · epilogue</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — LegalMind is also an MCP server, so Claude, Copilot or an Azure AI Foundry agent can use the legal knowledge base as a tool. The server is a thin client of the same API, so every guardrail still applies — and the answer carries its grounding label, so the calling agent can tell a verified answer from one it should flag.</p>
+</blockquote>
+<hr />
+<p>The <strong>Model Context Protocol (MCP)</strong> is an open standard for giving AI agents tools: a server describes its tools — name, description, argument schema — and any MCP-capable host can discover and call them. LegalMind exposes four:</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Does</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ask_legal_question</code></td>
+<td>A grounded answer with citations and a <strong>grounding label</strong>; pass the session ID back for follow-ups</td>
+</tr>
+<tr>
+<td><code>search_legal_documents</code></td>
+<td>Hybrid search for passages, optionally by document type</td>
+</tr>
+<tr>
+<td><code>ingest_document</code></td>
+<td>Add a local PDF, DOCX, TXT or image to the knowledge base</td>
+</tr>
+<tr>
+<td><code>list_agents</code></td>
+<td>The specialist agents and their tools</td>
+</tr>
+</tbody>
+</table>
+<pre><code class="language-bash">claude mcp add legalmind --env LEGALMIND_API_URL=https://&lt;your-api&gt; -- legalmind-mcp
+</code></pre>
+<h2>Three design choices</h2>
+<p><strong>A thin client, not a second backend.</strong> The MCP server calls the same REST API as the web interface. Content Safety, PII detection, the groundedness check, rate limits and the audit log all apply to agents exactly as they apply to people. There's one code path to secure and fix.</p>
+<p><strong>Descriptions are prompts.</strong> The host puts each tool's description in the model's context, and that text decides when the model uses which tool. <em>"Use <code>search_legal_documents</code> to find where something is written; use <code>ask_legal_question</code> for an answer"</em> is an instruction to a model as much as documentation for a person.</p>
+<p><strong>The grounding label travels with the answer.</strong> After <a href="part4-right-number-wrong-document.html">Part 4</a>, every answer says whether it's backed by the documents. Through MCP that becomes <code>"grounding": "not_grounded"</code> in the tool result — so a calling agent can say <em>"LegalMind couldn't confirm this from the documents"</em> instead of repeating an unsupported claim as fact. Guardrails don't stop mattering because the user is a model; they matter more, because a model will pass the answer on without hesitation.</p>
+<h2>What changes when an agent is the user</h2>
+<p>An MCP server is an API whose caller is a model, and models can be manipulated. Least privilege, validated arguments (document types are an enumeration, result counts are capped, uploads are size- and type-limited), every call in the audit log, and a human approving anything that writes. The same rules as any API — applied a little more strictly.</p>
+<hr />
+<p><em>LegalMind AI is open source: <a href="https://github.com/munyaradzi-zhou/LegalMind-AI">github.com/munyaradzi-zhou/LegalMind-AI</a>. The sample organisation and documents are fictional; LegalMind is a demonstration, not legal advice.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part5-no-secrets-and-the-31-minute-deploy.html">&larr; Part 5: No secrets, and the 31-minute deploy</a>
+        <a href="../../blogs.html">Back to Blog &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
