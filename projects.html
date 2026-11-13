@@ -4,7 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Projects — Munyaradzi Comfort Zhou</title>
-  <meta name="description" content="Research projects in conversational AI, knowledge graphs, and agricultural robotics.">
+  <meta name="description" content="Agentic AI systems: LegalMind AI on Azure, ProvenanceAgent on AWS, and yProv Ask, an MCP server with a tool-grounded agent.">
+  <meta property="og:title" content="Projects — Munyaradzi Comfort Zhou">
+  <meta property="og:image" content="https://munyaradzi-zhou.github.io/portfolio/assets/og-card.png">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="css/variables.css">
   <link rel="stylesheet" href="css/main.css">
 </head>
@@ -27,428 +30,75 @@
   </nav>
 
   <main class="container">
-    <h1 class="section-title">Projects</h1>
-    <p style="color: var(--color-text-light); margin-bottom: var(--space-2xl); max-width: 700px;">
-      Seven systems demonstrating end-to-end capability in conversational AI: a multi-agent legal assistant
-      deployed and measured on Azure, three focused on agriculture
-      (streaming analytics, knowledge retrieval, robot planning), one on customer intelligence with explainable AI,
-      one on temporal knowledge graphs for football analytics with multi-agent orchestration, and one
-      production-grade multi-agent RAG service deployed on AWS with full MLOps — infrastructure-as-code,
-      keyless CI/CD, evaluation gates, and observability.
-    </p>
+    <span class="eyebrow">Projects</span>
+    <h1 class="section-title">Agentic systems, deployed and measured</h1>
+    <p class="case-lead">Three flagship systems that share one idea: an AI agent should show its sources, check its own
+    answers and leave a record of what it did. Each has a case study with the architecture, the numbers and what I learned.</p>
 
-    <div class="card-grid">
-
-      <!-- LegalMind AI -->
-      <div class="card" id="legalmind">
-        <h3>LegalMind AI</h3>
-        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
-          Multi-Agent Legal Case Assistant on Azure, Deployed and Measured
-        </p>
-        <p>
-          Answers Dutch legal questions from an organisation's own documents &mdash; insurance policies, case files,
-          correspondence &mdash; with numbered citations, and tells the user whether each answer is actually backed
-          by those documents. An orchestrator routes each question to one of four Semantic Kernel agents (document
-          analysis, legal research, drafting, compliance); Azure AI Search retrieves chunks with hybrid BM25 + vector
-          search and a semantic ranker; every answer passes Content Safety, PII detection and an LLM groundedness
-          check that fails closed and labels the answer.
-        </p>
-        <p>
-          Built and run end to end on Azure: 18 resources defined in Bicep, one managed identity and no keys anywhere,
-          GitHub Actions CI/CD with OIDC, and Application Insights tracing. Evaluations against the live system drove
-          the fixes: the dashboards caught a groundedness check that failed open 52 times, and near-miss test questions
-          exposed answers that borrowed facts from the wrong document &mdash; solved by giving every chunk a header that
-          names its document.
-        </p>
-
-        <img src="assets/legalmind/app-map.png" alt="Application Insights application map of the deployed LegalMind API" loading="lazy"
-             style="display: block; max-width: 420px; width: 100%; border-radius: var(--radius-md); margin: var(--space-lg) 0;">
-
-        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Measured on the Live Deployment</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>Routing to the right specialist agent: 92% &rarr; 100% (24 labelled questions)</li>
-          <li>Right passage ranked first: 80% with hybrid + semantic ranker vs 49% keyword only</li>
-          <li>Expected facts in answers: 68% &rarr; 97%; groundedness 4.16 &rarr; 4.95 / 5; right source cited 100%</li>
-          <li>Unanswerable questions declined, including near-misses: 8 / 8</li>
-          <li><code>/api/chat</code> latency p50 / p95: 14.8 s / 39.5 s &rarr; 7.3 s / 15.7 s, by removing an LLM call that didn't help</li>
-          <li>Code-only releases in ~4 minutes, after one full-template deploy hung for 31</li>
-        </ul>
-
-        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>FastAPI on Azure Container Apps (scale to zero), Streamlit UI, and an MCP server so other agents can use the knowledge base</li>
-          <li>Azure OpenAI gpt-4.1-mini + text-embedding-3-large; Azure AI Search hybrid retrieval with contextual chunk headers</li>
-          <li>Ingestion: Document Intelligence / Content Understanding &rarr; heading-aware chunking &rarr; AI Language enrichment &rarr; embeddings &rarr; index</li>
-          <li>Responsible AI: Content Safety, PII detection, a grounding label on every answer, audit trail in Cosmos DB</li>
-          <li>Bicep IaC, user-assigned managed identity, keyless GitHub Actions CI/CD, Application Insights + KQL</li>
-        </ul>
-
-        <div class="tags" style="margin-top: var(--space-lg);">
-          <span class="tag tag--accent">Multi-Agent RAG</span>
-          <span class="tag">Azure OpenAI</span>
-          <span class="tag">Azure AI Search</span>
-          <span class="tag">Semantic Kernel</span>
-          <span class="tag">FastAPI</span>
-          <span class="tag">Container Apps</span>
-          <span class="tag">Cosmos DB</span>
-          <span class="tag">Bicep</span>
-          <span class="tag">GitHub Actions (OIDC)</span>
-          <span class="tag">Application Insights</span>
-          <span class="tag">MCP</span>
-          <span class="tag">Responsible AI</span>
+    <section class="section">
+      <div class="card-grid card-grid--pastel card-grid--three">
+        <div class="card">
+          <p class="card__kicker">Azure AI · Semantic Kernel</p>
+          <h3><a href="work/legalmind.html">LegalMind AI</a></h3>
+          <p>Multi-agent legal assistant on Azure with guardrails that fail closed. Facts in answers 68% → 97%, routing 100%, latency halved.</p>
+          <p class="card__link"><a href="work/legalmind.html">Case study &rarr;</a></p>
         </div>
-
-        <div style="margin-top: var(--space-lg);">
-          <a href="https://github.com/munyaradzi-zhou/LegalMind-AI" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
-          <a href="blog/legalmind/part1-design-doc-to-azure.html" style="font-weight: 500; margin-left: var(--space-lg);">Read blog series &rarr;</a>
+        <div class="card">
+          <p class="card__kicker">LangGraph · AWS · RAGAS</p>
+          <h3><a href="work/provenance-agent.html">ProvenanceAgent</a></h3>
+          <p>Graph and vector agents under a supervisor, a grader with self-repair, and a faithfulness gate in CI. 0.65 vs 0.53 faithfulness.</p>
+          <p class="card__link"><a href="work/provenance-agent.html">Case study &rarr;</a></p>
+        </div>
+        <div class="card">
+          <p class="card__kicker">MCP · tool grounding</p>
+          <h3><a href="work/yprov-ask.html">yProv Ask</a></h3>
+          <p>An MCP server whose agent learns only through deterministic tools; every figure is checked in code, every answer recorded.</p>
+          <p class="card__link"><a href="work/yprov-ask.html">Case study &rarr;</a></p>
         </div>
       </div>
+    </section>
 
-      <!-- FarmSmart -->
-      <div class="card" id="farmsmart">
-        <h3>FarmSmart</h3>
-        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
-          Real-Time NL Analytics over IoT Agricultural Streams
-        </p>
-        <p>
-          A complete natural language analytics system over real-time IoT sensor streams.
-          Farmers ask questions like "What was the average soil moisture in the north field
-          last week?" and receive instant answers derived from live sensor data processed
-          through Apache Spark Structured Streaming.
-        </p>
-        <p>
-          The system features a custom NL-to-query translator with intent classification
-          (TF-IDF + Logistic Regression), slot extraction, and query generation that routes
-          through real data repositories — InfluxDB for time-series sensor data, PostgreSQL
-          for field metadata, and a real-time alert engine for anomaly detection.
-        </p>
-
-        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>Apache Kafka for sensor data ingestion from IoT devices</li>
-          <li>Spark Structured Streaming with sliding window aggregations</li>
-          <li>Intent classification + slot extraction NLP pipeline</li>
-          <li>InfluxDB time-series storage with PostgreSQL field metadata</li>
-          <li>FastAPI backend with React dashboard frontend</li>
-          <li>Kubernetes-ready with Docker Compose orchestration</li>
-        </ul>
-
-        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
-        <p style="font-style: italic;">
-          Directly addresses "conversational orchestration over streaming dataflows" —
-          the core data infrastructure challenge of Position-L.
-        </p>
-
-        <div class="tags" style="margin-top: var(--space-lg);">
-          <span class="tag tag--accent">Streaming Analytics</span>
-          <span class="tag">Python</span>
-          <span class="tag">Apache Spark</span>
-          <span class="tag">Kafka</span>
-          <span class="tag">InfluxDB</span>
-          <span class="tag">PostgreSQL</span>
-          <span class="tag">FastAPI</span>
-          <span class="tag">React</span>
-          <span class="tag">Docker</span>
-          <span class="tag">NLP</span>
+    <section class="section">
+      <span class="eyebrow">Also</span>
+      <h2 class="section-title">Other work</h2>
+      <div class="rows">
+        <div class="row">
+          <h3><a href="https://github.com/munyaradzi-zhou/yProv4Agents" target="_blank" rel="noopener">yProv4Agents</a></h3>
+          <span class="tag">open source · W3C PROV</span>
+          <p>Behavioural provenance for multi-agent systems: every decision recorded with its rule and inputs, so verdicts replay and edits are detected. Built as a research fellow at the University of Trento.</p>
         </div>
-
-        <div style="margin-top: var(--space-lg);">
-          <a href="https://github.com/munyaradzi-zhou/farmsmart" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
-          &nbsp;&nbsp;
-          <a href="blog/farmsmart/part1-introduction.html" style="font-weight: 500;">Read blog series &rarr;</a>
+        <div class="row">
+          <h3><a href="blog/financial-analysis/part1-architecture.html">Multi-agent financial analysis</a></h3>
+          <span class="tag">LangGraph · Azure OpenAI · Cosmos DB</span>
+          <p>Researcher, analyst, writer and critic agents with a self-critique revision loop, REST and WebSocket streaming.</p>
+        </div>
+        <div class="row">
+          <h3><a href="blog/multi-agent-research/part1-architecture.html">Multi-agent research assistant</a></h3>
+          <span class="tag">LangGraph · Qdrant · LangSmith</span>
+          <p>A supervisor routes between researcher, analyst and writer agents; a critic sends drafts back until they score high enough.</p>
+        </div>
+        <div class="row">
+          <h3><a href="blog/azure-native-search/part1-architecture.html">Azure-native document search</a></h3>
+          <span class="tag">AI Search · Document Intelligence</span>
+          <p>Enterprise RAG on Azure AI Search with Document Intelligence ingestion, OpenAI embeddings and Cosmos DB chat history.</p>
+        </div>
+        <div class="row">
+          <h3><a href="blog/multimodal/part1-what-if-your-ai-could-see-hear-and-read.html">Multimodal AI assistant</a></h3>
+          <span class="tag">7 Azure AI services</span>
+          <p>See, hear, read and speak: Vision, Speech, Language, Content Safety and Azure OpenAI working together.</p>
+        </div>
+        <div class="row">
+          <h3><a href="blog/agrisage/part1-knowledge-graph.html">Graph-native RAG (MSc thesis)</a></h3>
+          <span class="tag">Neo4j · knowledge graphs</span>
+          <p>Natural-language querying over a knowledge graph: 88.89% multi-hop accuracy against 11.11% for a vector-only baseline.</p>
+        </div>
+        <div class="row">
+          <h3><a href="blog/farmsmart/part1-introduction.html">FarmSmart</a></h3>
+          <span class="tag">Kafka · Spark · streaming</span>
+          <p>Natural-language questions over live IoT sensor streams, processed with Spark Structured Streaming.</p>
         </div>
       </div>
-
-      <!-- AgriSage -->
-      <div class="card" id="agrisage">
-        <h3>AgriSage</h3>
-        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
-          Graph-Native RAG for Agricultural Knowledge Retrieval
-        </p>
-        <p>
-          A graph-native Retrieval-Augmented Generation system that builds agricultural
-          knowledge graphs from crop manuals, spraying guidelines, and pest management
-          documents. Uses the same ReAct decomposition and schema-aware Cypher generation
-          architecture from my master's thesis, adapted for the agricultural domain.
-        </p>
-        <p>
-          The system ingests unstructured agricultural documents, extracts entities
-          (crops, pests, diseases, treatments, parameters), builds a structured Neo4j
-          knowledge graph, and enables multi-hop reasoning through conversational queries.
-          A hybrid retrieval approach combines graph-native traversal with vector similarity
-          for comprehensive coverage.
-        </p>
-
-        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>Neo4j knowledge graph with agricultural ontology (Crop, Pest, Disease, Treatment, Parameter nodes)</li>
-          <li>ReAct-based query decomposition for complex multi-hop questions</li>
-          <li>Schema-aware Cypher generation with few-shot domain-specific prompting</li>
-          <li>Hybrid graph + vector (ChromaDB) retrieval pipeline</li>
-          <li>Document ingestion with entity extraction and relationship mapping</li>
-          <li>Streamlit conversational interface with graph visualization</li>
-        </ul>
-
-        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
-        <p style="font-style: italic;">
-          Directly addresses "LLM capabilities to extract parameter tuning values from
-          unstructured knowledge articles and configuration manuals" — the knowledge
-          retrieval backbone of Position-L.
-        </p>
-
-        <div class="tags" style="margin-top: var(--space-lg);">
-          <span class="tag tag--accent">Knowledge Graphs</span>
-          <span class="tag">Python</span>
-          <span class="tag">Neo4j</span>
-          <span class="tag">RAG</span>
-          <span class="tag">ReAct</span>
-          <span class="tag">LLMs</span>
-          <span class="tag">ChromaDB</span>
-          <span class="tag">FastAPI</span>
-          <span class="tag">Streamlit</span>
-        </div>
-
-        <div style="margin-top: var(--space-lg);">
-          <a href="https://github.com/munyaradzi-zhou/agrisage" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
-          &nbsp;&nbsp;
-          <a href="blog/agrisage/part1-knowledge-graph.html" style="font-weight: 500;">Read blog series &rarr;</a>
-        </div>
-      </div>
-
-      <!-- CropCommand -->
-      <div class="card" id="cropcommand">
-        <h3>CropCommand</h3>
-        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
-          Natural Language Task Planning for Agricultural Robots
-        </p>
-        <p>
-          A natural language task planning system that translates farming commands into
-          structured, constraint-aware execution plans for agricultural robots. Farmers
-          speak naturally — "Spray the northern tomato field before the rain, avoiding
-          the organic section" — and receive validated, executable robot task plans with
-          full constraint reasoning.
-        </p>
-        <p>
-          The system parses natural language commands, decomposes them into atomic tasks,
-          applies domain-specific constraints (weather windows, crop growth stages, terrain
-          limitations, robot capabilities), generates optimised schedules, and presents
-          plans for human review with natural language explanations and iterative refinement.
-        </p>
-
-        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>NL intent parsing with entity extraction and command resolution</li>
-          <li>Hierarchical task decomposition into atomic robot actions</li>
-          <li>Multi-dimensional constraint engine (weather, terrain, crop state, robot capabilities)</li>
-          <li>Plan generation with scheduling optimisation and confidence scoring</li>
-          <li>Farm environment and robot state simulation</li>
-          <li>Human-in-the-loop feedback with NL plan refinement and explanation generation</li>
-        </ul>
-
-        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
-        <p style="font-style: italic;">
-          Directly addresses "algorithms for generating robot control processes given
-          natural language utterances" and "human-in-the-loop feedback loops for user
-          supervision and trust calibration" — the robot interaction core of Position-L.
-        </p>
-
-        <div class="tags" style="margin-top: var(--space-lg);">
-          <span class="tag tag--accent">Robot Planning</span>
-          <span class="tag">Python</span>
-          <span class="tag">NL-to-Plan</span>
-          <span class="tag">Constraint Reasoning</span>
-          <span class="tag">Simulation</span>
-          <span class="tag">Human-in-the-Loop</span>
-          <span class="tag">FastAPI</span>
-          <span class="tag">Streamlit</span>
-        </div>
-
-        <div style="margin-top: var(--space-lg);">
-          <a href="https://github.com/munyaradzi-zhou/cropcommand" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
-          &nbsp;&nbsp;
-          <a href="blog/cropcommand/part1-nl-to-plans.html" style="font-weight: 500;">Read blog series &rarr;</a>
-        </div>
-      </div>
-
-      <!-- ProvenanceAgent -->
-      <div class="card" id="provenanceagent">
-        <h3>ProvenanceAgent</h3>
-        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
-          Production Multi-Agent RAG with Grounding Verification &amp; Full MLOps
-        </p>
-        <p>
-          A production-grade, cloud-deployed multi-agent RAG service. An LLM supervisor routes each
-          question to a Neo4j knowledge graph and/or a Qdrant vector store, a synthesis step writes a
-          concise, cited answer, and an LLM grader verifies every claim against the retrieved context
-          before it is returned — with a bounded self-repair loop that broadens retrieval when a claim
-          is ungrounded. Built for reliable multi-hop question answering over the 2WikiMultihopQA corpus,
-          where the answer requires chaining facts across separate passages.
-        </p>
-        <p>
-          The emphasis is production engineering: the entire stack is deployed on AWS ECS Fargate behind
-          an Application Load Balancer and an HTTPS API Gateway, provisioned 100% through Terraform, and
-          shipped via keyless GitHub Actions CI/CD (OIDC — no long-lived cloud keys). A RAGAS faithfulness
-          gate runs in CI and blocks regressions; graph + routing measurably beats a flat-vector baseline
-          (faithfulness 0.65 vs 0.53). Load-tested at 1,013 requests / 0 errors, p95 ≈ 1.2 s, at roughly
-          $0.0004 per query.
-        </p>
-
-        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>LangGraph state machine: redact &rarr; supervisor (LLM router) &rarr; graph / vector agents &rarr; synthesis &rarr; LLM grader &rarr; bounded repair loop</li>
-          <li>Hybrid retrieval: schema-aware text-to-Cypher over Neo4j (read-only guarded) + ANN vector search over Qdrant (cosine)</li>
-          <li>Grounding verification: LLM-as-judge grader checks every claim against context; self-repair re-routes on ungrounded answers (anti-hallucination)</li>
-          <li>Deployed on AWS ECS Fargate (ALB + API Gateway HTTPS, Secrets Manager, VPC) — 100% Terraform infrastructure-as-code</li>
-          <li>Keyless CI/CD: GitHub Actions + OIDC &rarr; ECR &rarr; zero-downtime rolling ECS deploy, gated by a RAGAS faithfulness threshold</li>
-          <li>Observability &amp; safety: Microsoft Presidio PII redaction (first node), Langfuse per-node tracing, CloudWatch EMF dashboards, MLflow + DVC for reproducible eval and data</li>
-        </ul>
-
-        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Technical Contributions</h4>
-        <p style="font-style: italic;">
-          Implements the provenance-tracking and anti-hallucination backbone at production grade —
-          grounded, cited, verified multi-hop answers with full deployment, evaluation, and observability.
-          Directly transferable to the trustworthy, auditable conversational systems that agricultural
-          decision support in Position-L demands.
-        </p>
-
-        <div class="tags" style="margin-top: var(--space-lg);">
-          <span class="tag tag--accent">Multi-Agent RAG</span>
-          <span class="tag">Python</span>
-          <span class="tag">LangGraph</span>
-          <span class="tag">Neo4j</span>
-          <span class="tag">Qdrant</span>
-          <span class="tag">RAGAS</span>
-          <span class="tag">AWS (ECS Fargate)</span>
-          <span class="tag">Terraform</span>
-          <span class="tag">GitHub Actions (OIDC)</span>
-          <span class="tag">Langfuse</span>
-          <span class="tag">FastAPI</span>
-          <span class="tag">Docker</span>
-          <span class="tag">Provenance Tracking</span>
-        </div>
-
-        <div style="margin-top: var(--space-lg);">
-          <a href="https://github.com/munyaradzi-zhou/provenance-agent" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
-        </div>
-      </div>
-
-      <!-- Football Agentic RAG -->
-      <div class="card" id="football-rag">
-        <h3>Football Agentic RAG System</h3>
-        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
-          Multi-Agent Temporal Knowledge Graphs for Sports Analytics
-        </p>
-        <p>
-          An AI-powered football analytics system that combines temporal knowledge graphs,
-          multi-agent orchestration, and RAG for intelligent question answering over 32 seasons
-          (1993-2025) of European football data. Users ask natural language questions like
-          "Who was Manchester United's top scorer in 2023?" and receive accurate answers with
-          visualizations, sourced from knowledge graphs, structured databases, and vector stores.
-        </p>
-        <p>
-          The system features an orchestrator agent that routes queries to specialized sub-agents:
-          temporal normalization for date parsing, knowledge graph queries for relationship traversal,
-          stats aggregation for numerical analysis, explanation RAG for contextual insights, and
-          visualization generation for chart specs. Includes comprehensive provenance tracking,
-          caching, and multi-turn conversation support.
-        </p>
-
-        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>Multi-agent orchestration with 6 specialized agents (orchestrator, temporal normalizer, router, KG query, stats, RAG, visualization)</li>
-          <li>Temporal knowledge graph (Neo4j) with 32 seasons of football data</li>
-          <li>Hybrid retrieval: graph traversal + vector search (Chroma) + SQL aggregation (PostgreSQL)</li>
-          <li>Multi-turn conversation with context tracking (teams, players, competitions, seasons)</li>
-          <li>Provenance tracking and anti-hallucination verification for reliable answers</li>
-          <li>FastAPI backend with Streamlit conversational interface</li>
-        </ul>
-
-        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Technical Contributions</h4>
-        <p style="font-style: italic;">
-          Demonstrates advanced agentic AI patterns: query routing, temporal reasoning, hybrid retrieval,
-          session management, and human-in-the-loop conversation — applicable to conversational systems
-          across domains (agriculture, healthcare, finance) requiring multi-source data integration.
-        </p>
-
-        <div class="tags" style="margin-top: var(--space-lg);">
-          <span class="tag tag--accent">Multi-Agent Systems</span>
-          <span class="tag">Python</span>
-          <span class="tag">Neo4j</span>
-          <span class="tag">PostgreSQL</span>
-          <span class="tag">Chroma</span>
-          <span class="tag">Redis</span>
-          <span class="tag">RAG</span>
-          <span class="tag">LLMs</span>
-          <span class="tag">FastAPI</span>
-          <span class="tag">Streamlit</span>
-          <span class="tag">Provenance Tracking</span>
-        </div>
-
-        <div style="margin-top: var(--space-lg);">
-          <a href="https://github.com/munyaradzi-zhou/football-agentic-rag" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
-        </div>
-      </div>
-
-      <!-- ChurnSense -->
-      <div class="card" id="churnsense">
-        <h3>ChurnSense</h3>
-        <p style="font-size: var(--font-size-sm); color: var(--color-accent); margin-bottom: var(--space-sm); font-weight: 600;">
-          Conversational AI for Customer Intelligence & Retention
-        </p>
-        <p>
-          A production-grade conversational AI system for customer churn prediction, analytics, and retention strategy.
-          Business users ask questions like "Show me high-risk customers", "Why is customer 10025 at risk?",
-          or "Give me retention strategies for premium customers" and receive intelligent answers with automatic
-          visualizations and explainable insights.
-        </p>
-        <p>
-          Features a multi-agent orchestration architecture with 6 specialized AI agents: Orchestrator for coordination,
-          Query Router for intent classification, ML Prediction Agent (99.9% accuracy), Churn Analytics Agent for
-          segment analysis, Explainability Agent with SHAP-based feature importance and natural language generation,
-          and Visualization Agent for auto chart type detection.
-        </p>
-
-        <h4 style="margin-top: var(--space-lg); margin-bottom: var(--space-sm); font-size: var(--font-size-base);">Architecture Highlights</h4>
-        <ul style="color: var(--color-text-light); padding-left: var(--space-xl); margin-bottom: var(--space-md);">
-          <li>Multi-agent orchestration with 6 specialized AI agents</li>
-          <li>LLM-powered intent classification and query enrichment (OpenAI)</li>
-          <li>Multi-turn dialogue with context tracking and pronoun resolution</li>
-          <li>SHAP-based explainability + natural language generation</li>
-          <li>Random Forest ML model with 99.9% prediction accuracy</li>
-          <li>Auto-detecting visualization agent (6 chart types)</li>
-          <li>Streamlit conversational interface + legacy Flask API</li>
-          <li>Redis session management for distributed conversations</li>
-          <li>Docker containerization with Prometheus monitoring</li>
-        </ul>
-
-        <h4 style="margin-bottom: var(--space-sm); font-size: var(--font-size-base);">PhD Alignment</h4>
-        <p style="font-style: italic;">
-          Demonstrates conversational AI for real-time monitoring and decision support—directly transferable
-          to agricultural robot monitoring and farmer interaction patterns in Position-L.
-        </p>
-
-        <div class="tags" style="margin-top: var(--space-lg);">
-          <span class="tag tag--accent">Conversational AI</span>
-          <span class="tag">Python</span>
-          <span class="tag">Multi-Agent Systems</span>
-          <span class="tag">LLMs (OpenAI)</span>
-          <span class="tag">Explainable AI</span>
-          <span class="tag">SHAP</span>
-          <span class="tag">Machine Learning</span>
-          <span class="tag">Streamlit</span>
-          <span class="tag">FastAPI</span>
-          <span class="tag">Redis</span>
-          <span class="tag">Docker</span>
-        </div>
-
-        <div style="margin-top: var(--space-lg);">
-          <a href="https://github.com/munyaradzi-zhou/churnsense" target="_blank" rel="noopener" style="font-weight: 500;">View on GitHub &rarr;</a>
-          &nbsp;&nbsp;
-          <a href="blog/churnsense/part1-building-the-machine-learning-model.html" style="font-weight: 500;">Read blog series &rarr;</a>
-        </div>
-      </div>
-
-    </div>
+    </section>
   </main>
 
   <footer class="footer">

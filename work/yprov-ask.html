@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>yProv Ask — case study — Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="An MCP server with a LangGraph agent that learns only through deterministic tools; every figure in an answer is checked in code and every answer is recorded as W3C PROV.">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="yProv Ask — case study">
+  <meta property="og:description" content="An MCP server with a LangGraph agent that learns only through deterministic tools; every figure in an answer is checked in code and every answer is recorded as W3C PROV.">
+  <meta property="og:image" content="https://munyaradzi-zhou.github.io/portfolio/assets/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../css/variables.css">
+  <link rel="stylesheet" href="../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="../projects.html">Projects</a></li>
+        <li><a href="../blogs.html">Blog</a></li>
+        <li><a href="../cv.html">CV</a></li>
+      </ul>
+      <img src="../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="hero">
+      <span class="eyebrow">Case study · MCP · LangGraph</span>
+      <h1>yProv Ask</h1>
+      <p class="case-lead">Ask plain-language questions about W3C PROV provenance files and get answers that are checked against the files before they are returned. An MCP server with a LangGraph agent behind it, usable from Claude Desktop, IDEs, a terminal or an embeddable web widget.</p>
+      <div class="chips"><span class="tag">MCP</span><span class="tag">LangGraph</span><span class="tag">OpenAI</span><span class="tag">SQLite</span><span class="tag">W3C PROV</span><span class="tag">Docker</span><span class="tag">GitHub Actions</span><span class="tag">Web Components</span></div>
+      <div class="actions"><a class="button" href="https://github.com/munyaradzi-zhou/yprov-ask" target="_blank" rel="noopener">View on GitHub</a></div>
+      <div class="proof"><div class="proof__item"><span class="proof__num">Tools only</span><span class="proof__label">the agent learns about a file only through deterministic query tools</span></div><div class="proof__item"><span class="proof__num">In code</span><span class="proof__label">every figure in an answer is checked against what the tools returned</span></div><div class="proof__item"><span class="proof__num">Replayable</span><span class="proof__label">each answer is stored as its own PROV record, verdict included</span></div></div>
+    </section>
+
+    <article class="case">
+
+      <h2>The problem</h2>
+      <p>Provenance files record how a training run, a workflow or an agent decision came about, but they are large JSON
+      graphs that few people can read. A chat interface helps only if its answers can be trusted, and for numbers that
+      means more than a prompt asking the model to be careful.</p>
+
+      <h2>How it works</h2>
+      <p>An MCP server exposes deterministic query tools over an SQLite store of ingested PROV-JSON, and a LangGraph agent
+      (gpt-4o-mini at temperature 0) can learn about a file only by calling them. Before an answer is returned, a grounding
+      check written in code accepts it only when every figure in it was returned by a lookup, in the role it was returned
+      for; otherwise the agent is sent back once to revise. Questions the records cannot answer are declined.</p>
+      <figure>
+        <img src="../assets/yprov-ask/yprov-ask.jpg" alt="yProv Ask explaining an agent decision: the verdict, the rule and the inputs it read" loading="lazy">
+        <figcaption>Explaining an agent decision recorded by yProv4Agents: the verdict, the rule and the values it read, with the number of lookups shown.</figcaption>
+      </figure>
+      <p>Every answer is written down as its own PROV record (the question, every tool call, the model call and the
+      decision) with the rule inputs needed to replay the verdict. One server serves several clients: a dependency-free web
+      component for the yProv Explorer, a web console, a terminal chat, and any MCP client over stdio or streamable HTTP.</p>
+
+      <h2>Results</h2>
+      <p>The repository ships question banks with gold answers, runners and scorers in <code>eval/</code>, and the server
+      runs as a non-root container with a health check. It reads the whole yProv family: training runs from yProv4ML,
+      decision records from yProv4Agents and workflow traces from yProv4WfS, openEO and Ophidia.</p>
+
+      <h2>What I learned</h2>
+      <div class="lessons"><div class="lesson"><span class="lesson__num">01</span><div><h3>Check facts in code, not in prompts</h3><p>A model asked to be accurate still invents figures. A deterministic check against tool outputs turns accuracy into a rule.</p></div></div><div class="lesson"><span class="lesson__num">02</span><div><h3>Decline out of scope</h3><p>Questions the records cannot answer are declined instead of answered from general knowledge.</p></div></div><div class="lesson"><span class="lesson__num">03</span><div><h3>One protocol, many clients</h3><p>Building on MCP meant one server could serve a browser widget, a terminal and desktop agents without separate integrations.</p></div></div></div>
+    </article>
+
+    <div class="post-nav">
+      <a href="../projects.html">&larr; All projects</a>
+      <a href="legalmind.html">LegalMind AI &rarr;</a>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

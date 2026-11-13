@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LegalMind AI — case study — Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="Multi-agent legal assistant on Azure: hybrid retrieval, guardrails that fail closed, and evaluation-driven fixes from 68% to 97% factual answers.">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="LegalMind AI — case study">
+  <meta property="og:description" content="Multi-agent legal assistant on Azure: hybrid retrieval, guardrails that fail closed, and evaluation-driven fixes from 68% to 97% factual answers.">
+  <meta property="og:image" content="https://munyaradzi-zhou.github.io/portfolio/assets/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../css/variables.css">
+  <link rel="stylesheet" href="../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="../projects.html">Projects</a></li>
+        <li><a href="../blogs.html">Blog</a></li>
+        <li><a href="../cv.html">CV</a></li>
+      </ul>
+      <img src="../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="hero">
+      <span class="eyebrow">Case study · Azure AI · Semantic Kernel</span>
+      <h1>LegalMind AI</h1>
+      <p class="case-lead">A multi-agent assistant that answers Dutch legal questions from an organisation's own documents, with citations and a label on every answer saying whether the documents actually back it. Built, deployed and measured end to end on Azure.</p>
+      <div class="chips"><span class="tag">Azure OpenAI</span><span class="tag">Azure AI Search</span><span class="tag">Semantic Kernel</span><span class="tag">FastAPI</span><span class="tag">Container Apps</span><span class="tag">Cosmos DB</span><span class="tag">Bicep</span><span class="tag">GitHub Actions</span><span class="tag">Application Insights</span><span class="tag">MCP</span></div>
+      <div class="actions"><a class="button" href="https://github.com/munyaradzi-zhou/LegalMind-AI" target="_blank" rel="noopener">View on GitHub</a><a class="button button--quiet" href="../blog/legalmind/part1-design-doc-to-azure.html">Read the 5-part series</a></div>
+      <div class="proof"><div class="proof__item"><span class="proof__num">68→97%</span><span class="proof__label">expected facts in answers, after evaluation-driven fixes</span></div><div class="proof__item"><span class="proof__num">92→100%</span><span class="proof__label">questions routed to the right specialist agent</span></div><div class="proof__item"><span class="proof__num">7.3 s</span><span class="proof__label">median server-side answer time, down from 14.8 s</span></div></div>
+    </section>
+
+    <article class="case">
+
+      <h2>The problem</h2>
+      <p>Lawyers and case handlers at a legal-expenses insurer ask questions about their own documents: is this dispute
+      covered, what is the waiting period, what did we tell the employer. A chatbot that answers from general knowledge
+      is dangerous here; one that cites a passage about the <em>wrong</em> policy is worse, because it looks trustworthy.</p>
+
+      <h2>How it works</h2>
+      <p>An orchestrator classifies each question and routes it to one of four Semantic Kernel agents: document analysis,
+      legal research, drafting or compliance. Retrieval is Azure AI Search hybrid search (BM25 and vectors fused with
+      Reciprocal Rank Fusion, then a semantic ranker) over chunks that each carry a one-line header naming their document.
+      Every question and answer passes Content Safety and PII detection, and an LLM groundedness check compares each
+      answer with its sources. If that check fails, the answer is labelled <em>unverified</em>, never silently passed.</p>
+      <figure>
+        <img src="../assets/legalmind/app-map.png" alt="Application Insights map of the deployed API and its dependencies" loading="lazy">
+        <figcaption>The deployed API in Application Insights: three instances calling Cosmos DB, the Azure AI services and the managed-identity endpoint.</figcaption>
+      </figure>
+      <p>All 18 Azure resources are defined in Bicep and reached through one user-assigned managed identity, with key
+      authentication disabled everywhere. GitHub Actions deploys over OIDC, and only re-applies infrastructure when
+      <code>infra/</code> changed, so code releases take about four minutes.</p>
+
+      <h2>Results</h2>
+      <table>
+        <thead><tr><th>Measured on the live deployment</th><th>Before</th><th>After</th></tr></thead>
+        <tbody>
+          <tr><td>Expected facts in answers (27 questions)</td><td>68%</td><td><strong>97%</strong></td></tr>
+          <tr><td>Groundedness, LLM judge (1–5)</td><td>4.16</td><td><strong>4.95</strong></td></tr>
+          <tr><td>Unanswerable questions declined, incl. near-misses</td><td>6 / 8</td><td><strong>8 / 8</strong></td></tr>
+          <tr><td>Right passage ranked first (hybrid + semantic vs keyword)</td><td>49%</td><td><strong>80%</strong></td></tr>
+          <tr><td><code>/api/chat</code> p50 / p95</td><td>14.8 s / 39.5 s</td><td><strong>7.3 s / 15.7 s</strong></td></tr>
+          <tr><td>Groundedness checks that failed open</td><td>52</td><td><strong>0</strong></td></tr>
+        </tbody>
+      </table>
+
+      <h2>What I learned</h2>
+      <div class="lessons"><div class="lesson"><span class="lesson__num">01</span><div><h3>Guards must fail closed</h3><p>Application Insights showed the groundedness check had crashed 52 times and reported every answer as grounded. It now labels failures instead.</p></div></div><div class="lesson"><span class="lesson__num">02</span><div><h3>Fix the data before tuning the judge</h3><p>Three rounds of prompt changes caught one wrong-document answer in three; one sentence of context per chunk made the agent decline all of them.</p></div></div><div class="lesson"><span class="lesson__num">03</span><div><h3>Measure every model call</h3><p>Query rewriting cost 1.4 seconds per question and improved nothing. Removing it halved latency.</p></div></div></div>
+    </article>
+
+    <div class="post-nav">
+      <a href="../projects.html">&larr; All projects</a>
+      <a href="provenance-agent.html">ProvenanceAgent &rarr;</a>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

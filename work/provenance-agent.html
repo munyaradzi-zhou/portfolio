@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ProvenanceAgent — case study — Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="Multi-agent RAG over a knowledge graph and vector store, with a grader, self-repair and a RAGAS faithfulness gate in CI, deployed on AWS.">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="ProvenanceAgent — case study">
+  <meta property="og:description" content="Multi-agent RAG over a knowledge graph and vector store, with a grader, self-repair and a RAGAS faithfulness gate in CI, deployed on AWS.">
+  <meta property="og:image" content="https://munyaradzi-zhou.github.io/portfolio/assets/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../css/variables.css">
+  <link rel="stylesheet" href="../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="../projects.html">Projects</a></li>
+        <li><a href="../blogs.html">Blog</a></li>
+        <li><a href="../cv.html">CV</a></li>
+      </ul>
+      <img src="../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="hero">
+      <span class="eyebrow">Case study · LangGraph · AWS</span>
+      <h1>ProvenanceAgent</h1>
+      <p class="case-lead">A multi-agent RAG service for multi-hop questions: a supervisor routes between graph and vector retrieval, a grader checks the answer against its sources, and a faithfulness threshold in CI blocks regressions. Deployed on AWS with Terraform and traced end to end.</p>
+      <div class="chips"><span class="tag">LangGraph</span><span class="tag">Neo4j</span><span class="tag">Qdrant</span><span class="tag">RAGAS</span><span class="tag">FastAPI</span><span class="tag">AWS ECS Fargate</span><span class="tag">Terraform</span><span class="tag">GitHub Actions (OIDC)</span><span class="tag">Langfuse</span><span class="tag">Presidio</span></div>
+      <div class="actions"><a class="button" href="https://github.com/munyaradzi-zhou/provenance-agent" target="_blank" rel="noopener">View on GitHub</a></div>
+      <div class="proof"><div class="proof__item"><span class="proof__num">0.65</span><span class="proof__label">RAGAS faithfulness, vs 0.53 for a flat-vector baseline</span></div><div class="proof__item"><span class="proof__num">1,013</span><span class="proof__label">requests on the live deployment, with 0 errors</span></div><div class="proof__item"><span class="proof__num">$0.0004</span><span class="proof__label">average model cost per query</span></div></div>
+    </section>
+
+    <article class="case">
+
+      <h2>The problem</h2>
+      <p>Flat vector RAG breaks on compositional questions, where the answer needs facts that never appear in the same
+      chunk: <em>"What nationality is the director of the film Nemesis 2: Nebula?"</em> needs film, then director, then
+      nationality. The benchmark is 2WikiMultihopQA, loaded as 1,896 graph entities in Neo4j and 3,463 passage vectors in Qdrant.</p>
+
+      <h2>How it works</h2>
+      <p>A LangGraph state machine redacts PII with Presidio, then a supervisor agent decides between graph traversal
+      (read-only-guarded text-to-Cypher) and semantic retrieval, or both. A synthesis agent writes a cited answer and a
+      grader checks it against the retrieved context; if a claim is not grounded, a bounded repair loop retries with
+      broader retrieval. Every response carries citations, a faithfulness verdict and the reasoning trace.</p>
+      <figure>
+        <img src="../assets/provenance-agent/langfuse-trace.png" alt="Langfuse trace of one query: redact, supervisor, vector agent, synthesis, grader" loading="lazy">
+        <figcaption>One query traced node by node in Langfuse, with tokens, latency and cost per step.</figcaption>
+      </figure>
+      <p>The stack runs on AWS ECS Fargate behind an Application Load Balancer and an HTTPS API Gateway, provisioned with
+      Terraform and deployed by GitHub Actions over OIDC, with no long-lived cloud keys.</p>
+      <figure>
+        <img src="../assets/provenance-agent/github-actions-deploy.png" alt="GitHub Actions deploy run: OIDC credentials, ECR push and ECS roll-out" loading="lazy">
+        <figcaption>The deploy pipeline: OIDC credentials, build and push to ECR, roll the ECS service.</figcaption>
+      </figure>
+
+      <h2>Results</h2>
+      <table>
+        <thead><tr><th>RAGAS, 12 curated multi-hop questions</th><th>Agent</th><th>Flat-vector baseline</th></tr></thead>
+        <tbody>
+          <tr><td>Faithfulness</td><td><strong>0.65</strong></td><td>0.53</td></tr>
+          <tr><td>Answer relevancy</td><td><strong>0.63</strong></td><td>0.47</td></tr>
+        </tbody>
+      </table>
+      <p>Live traffic over about 2 hours 45 minutes: 1,013 requests, 0 errors, p95 around 1.2 s for the mix of health
+      checks and queries, and about $0.0004 per query in model cost. The whole stack costs $2–4 a day while running and
+      <code>terraform destroy</code> takes it to zero.</p>
+
+      <h2>What I learned</h2>
+      <div class="lessons"><div class="lesson"><span class="lesson__num">01</span><div><h3>Honest margins beat perfect numbers</h3><p>The agent wins, but not by a landslide: where the graph lacked a path it fell back to vector search. Saying so is more credible than a suspiciously perfect score.</p></div></div><div class="lesson"><span class="lesson__num">02</span><div><h3>A latency number needs its request mix</h3><p>Health checks dominated p50; the real agentic calls, with up to four sequential LLM calls, sit in the tail. A real SLO needs a metric per route.</p></div></div><div class="lesson"><span class="lesson__num">03</span><div><h3>Gate quality in CI</h3><p>A faithfulness threshold in the pipeline turns evaluation from a report into a rule that blocks regressions.</p></div></div></div>
+    </article>
+
+    <div class="post-nav">
+      <a href="../projects.html">&larr; All projects</a>
+      <a href="yprov-ask.html">yProv Ask &rarr;</a>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>
