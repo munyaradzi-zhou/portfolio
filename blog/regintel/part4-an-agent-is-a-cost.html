@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>An agent is a cost, not a feature &mdash; RegIntel &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="Some regulatory questions need data, not documents: adverse-event counts from FDA&#x27;s FAERS database, codes from CDISC terminology. A Microsoft Agent Framework agent answers them with four tools,…">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>An agent is a cost, not a feature</h1>
+        <p class="meta">RegIntel: answers you can check · Part 4 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — Some regulatory questions need data, not documents: adverse-event counts from FDA's FAERS database, codes from CDISC terminology. A Microsoft Agent Framework agent answers them with four tools, and every number comes from DuckDB, never from the model. Then I ran the agent on the guidance questions too. It was slower, cost more, and was no better. A one-call router now sends each question to the cheapest path that can answer it.</p>
+</blockquote>
+<hr />
+<h2>Questions documents can't answer</h2>
+<blockquote>
+<p><em>"Is there a disproportionality signal for dupilumab and conjunctivitis in FAERS? Give the reporting odds ratio and its 95% confidence interval."</em></p>
+<p><em>"Which CDISC SDTM codelist holds the values for a subject's sex?"</em></p>
+</blockquote>
+<p>No guidance document contains these answers. The first is a <strong>computation</strong> over adverse-event reports. The second is an <strong>exact lookup</strong> in a 67,192-term vocabulary. A language model asked either will produce something plausible, and in pharmacovigilance plausible is the problem.</p>
+<h2>Data as tools, numbers from code</h2>
+<p>I loaded one quarter of FAERS (openFDA's 2025 Q1 release, parts 1–3: 36,000 reports). Each 900 MB JSON file is streamed into three Parquet tables (reports, drugs, reactions), about 3 MB in total, and queried in-process with <strong>DuckDB</strong>. CDISC Controlled Terminology comes from NCI EVS as tab-separated files, indexed for exact matching.</p>
+<p>The agent gets four tools:</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Tool</th><th>Does</th><th>Guarantee</th></tr></thead>
+<tbody>
+<tr><td><code>search_guidance</code></td><td>One knowledge-base retrieval (Part 2)</td><td>One call per sub-question</td></tr>
+<tr><td><code>lookup_cdisc_term</code></td><td>Exact CDISC lookup</td><td>A near-miss code is a wrong code, so: exact or nothing</td></tr>
+<tr><td><code>faers_drug_summary</code></td><td>Reports, serious, deaths, top reactions</td><td>Built from DuckDB expressions; the model never writes SQL</td></tr>
+<tr><td><code>faers_disproportionality</code></td><td>The 2×2 table and the reporting odds ratio with its 95% CI</td><td>Says, in its own output, that it is a screening statistic, not causation</td></tr>
+</tbody>
+</table></div>
+<p>The important design decision is what the agent is <em>not</em> allowed to do: <strong>write the answer</strong>. It plans and calls tools. Every result goes into a numbered evidence pool, and then the same writer, verifier and reviewer from Parts 1 and 3 answer from that pool. So a FAERS number in the answer has to appear in the FAERS tool's output, quoted. A real answer from the deployed API:</p>
+<blockquote>
+<p><em>Reporting odds ratio for DUPILUMAB and 'Conjunctivitis' is 13.97 (95% CI 7.98 to 24.47). [1]</em></p>
+<p><em>The passage cautions that disproportionality is a signal-screening statistic and "does not show that the drug causes the reaction." [1]</em></p>
+<p>[1] openFDA FAERS extract, 2025 Q1 (parts 1-3) · computed</p>
+</blockquote>
+<p>That's one tool call, 0.02 seconds in DuckDB, and 11.3 seconds end to end. If the writer had rounded 13.97 to 14, the verifier would have removed the statement. The caveat is in the answer because it's in the tool's output; the tool, not the prompt, makes it impossible to quote the number without it.</p>
+<p>The caveat matters. For dupilumab, the reaction with the highest ROR in this data is <em>atopic dermatitis</em> (176), the condition dupilumab is prescribed for. A signal statistic finds things to look at. It doesn't explain them.</p>
+<h2>Making the agent cheap</h2>
+<p>The first version worked and was slow: 52.7 seconds of research, five tool calls, 32,000 tokens. Two of the calls were guidance searches for facts that live in FAERS or CDISC. Three changes fixed it:</p>
+<ul>
+<li><strong>Low reasoning effort.</strong> Planning tool calls is not hard thinking.</li>
+<li><strong>Parallel tool calls.</strong> Independent lookups run in one turn.</li>
+<li><strong>One sentence in the instructions:</strong> <em>each source is only in its own tool</em>. The guidance corpus has no FAERS data and no CDISC terms.</li>
+</ul>
+<div class="table-scroll"><table>
+<thead><tr><th></th><th>First run</th><th>Tuned</th></tr></thead>
+<tbody>
+<tr><td>Research time</td><td>52.7 s</td><td><strong>13.9 s</strong></td></tr>
+<tr><td>Tool calls</td><td>5</td><td><strong>3</strong></td></tr>
+<tr><td>Tokens</td><td>32K</td><td><strong>4.5K</strong></td></tr>
+</tbody>
+</table></div>
+<p>On the ten tool questions, with FAERS ground truth computed from the Parquet tables at evaluation time so it can't drift: all facts correct <strong>10/10</strong>, right tools 10/10, wasted searches 0, at about a quarter of a US cent per answer.</p>
+<p>Parallel tools brought one bug. Concurrent FAERS calls hit a single DuckDB connection and crashed with <code>ResourceInUseException</code>, which I found by clicking around the UI. A lock fixed it, and a 32-thread unit test keeps it fixed.</p>
+<h2>Then I gave the agent everything</h2>
+<p>If the agent can decompose questions and search guidance per sub-question, why not send <em>all</em> questions through it? I ran it on the 60 guidance questions and compared it with the fixed pipeline from Parts 1–3:</p>
+<div class="table-scroll"><table>
+<thead><tr><th>60 guidance questions</th><th>Fixed pipeline</th><th>Agent</th></tr></thead>
+<tbody>
+<tr><td>Fact recall</td><td><strong>0.958</strong></td><td>0.933</td></tr>
+<tr><td>Expected source cited</td><td><strong>0.981</strong></td><td>0.923</td></tr>
+<tr><td>Unanswerables declined</td><td><strong>8 / 8</strong></td><td>7 / 8</td></tr>
+<tr><td>Cost per answer</td><td><strong>$0.0027</strong></td><td>$0.0041</td></tr>
+</tbody>
+</table></div>
+<p>No better on any measure, and 50% more expensive. Doubling its passages per search made it more expensive still ($0.0055) and no better. On questions whose steps are known in advance, the agent's flexibility bought nothing.</p>
+<h2>The router</h2>
+<p>So each question now gets one cheap classification call first (<code>gpt-5-mini</code>, minimal reasoning, about 1.3 s, structured output with two booleans):</p>
+<ul>
+<li><strong>Needs FAERS or CDISC data?</strong> Send it to the agent.</li>
+<li><strong>Guidance, several parts?</strong> Send it to the pipeline, with retrieval at <code>medium</code> effort.</li>
+<li><strong>Guidance, one question?</strong> Send it to the pipeline at <code>low</code> effort.</li>
+</ul>
+<p>The prompt draws one line carefully. A question <em>about</em> safety reporting rules is a guidance question; a question that needs a FAERS <em>count</em> is a data question. If the output can't be parsed, the router falls back to the most capable path.</p>
+<p>The router was accurate on 0.957 of 70 questions. Data questions went to the agent 10/10, and guidance questions went to it 0 times. The three misses were single-vs-multi borderline cases, where both paths answer anyway. End to end, the routed system matched the best fixed configuration on quality, was about 35% faster on single questions, and was the only configuration that could answer the data questions at all.</p>
+<h2>Follow-ups, without leaking</h2>
+<p>One more conversation feature, and one more mistake. "And for narrow therapeutic index drugs?" means nothing to retrieval on its own, so a rewriter turns follow-ups into standalone questions. My first version showed it the previous <em>answers</em> as well as the questions. The follow-up evaluation caught the leak: answer text was copied into the rewritten question, so retrieval found passages matching the previous answer, and the score went <em>up</em> for the wrong reason. The rewriter now sees earlier <strong>questions only</strong>. All 8 rewrites resolved, and 0 facts leaked.</p>
+<blockquote>
+<p><strong>Takeaways</strong></p>
+<ul>
+<li>Numbers must come from code. Let the agent choose tools, but not write the figures.</li>
+<li>Separate research from writing, so one verifier guards every path.</li>
+<li>Tool descriptions are prompts. "Each source is only in its own tool" removed every wasted call.</li>
+<li><strong>An agent is a cost, not a feature.</strong> Measure it against the pipeline; route to it only where it's needed.</li>
+<li>Check your evaluation for leaks. A score that rises for the wrong reason is worse than one that falls.</li>
+</ul>
+</blockquote>
+<p>In <a href="part5-fifteen-of-seventy.html">Part 5</a>: 185 green tests, a deployment on Azure, and the 15 requests out of 70 that failed anyway.</p>
+<hr />
+<p><em>RegIntel is open source: <a href="https://github.com/munyaradzi-zhou/RegIntel">github.com/munyaradzi-zhou/RegIntel</a>. It answers from public FDA, ICH and EMA guidance, CDISC terminology and openFDA FAERS data, and is a demonstration, not medical or regulatory advice. Case study: <a href="../../work/regintel.html">RegIntel</a>.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part3-perfect-quotes-wrong-conclusion.html">&larr; Part 3: Perfect quotes, wrong conclusion</a>
+        <a href="part5-fifteen-of-seventy.html">Part 5: 15 of 70: the bug only Azure could show me &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

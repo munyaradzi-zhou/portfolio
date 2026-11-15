@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>A citation is a contract, not a courtesy &mdash; RegIntel &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="RegIntel answers regulatory questions about FDA, ICH and EMA guidance. A model writes the answer; plain Python decides whether you get to see it. Every quote must be verbatim in a retrieved passage…">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>A citation is a contract, not a courtesy</h1>
+        <p class="meta">RegIntel: answers you can check · Part 1 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — RegIntel answers regulatory questions about FDA, ICH and EMA guidance. A model writes the answer; plain Python decides whether you get to see it. Every quote must be verbatim in a retrieved passage and every number must appear in a quote, or the statement is removed. Building that check taught me more about my corpus than about my model: the first verifier rejected 28 real quotes because of how PDFs store text, and the best fix of the whole project cost zero model calls.</p>
+</blockquote>
+<hr />
+<p>In most domains a slightly wrong answer is an inconvenience. In drug regulation it can be a missed reporting deadline. "Serious unexpected suspected adverse reactions must be reported within 7 days", with a citation, reads as authoritative. If the cited sentence actually says 15, the citation has made the error <em>more</em> convincing, not less.</p>
+<p>That was the design brief for <strong>RegIntel</strong>: a question-answering system over 23 public guidances (9 FDA, 8 ICH, 5 EMA, EU GMP Annex 11), CDISC terminology and a quarter of FDA adverse-event reports, deployed on Azure. The premise I started from: <em>in a regulated domain, a confident wrong answer is worse than no answer.</em></p>
+<h2>Asking for citations is not enough</h2>
+<p>A retrieval-augmented system gives the model passages and asks it to answer from them. Asking it to cite is the obvious next step, and it helps. But a citation is a claim the model makes about its own answer. It can point at the right passage and still misquote it, carry a number the passage does not contain, or quote a sentence that does not support the conclusion.</p>
+<p>So the contract changed. The writer (<code>gpt-5-mini</code>, structured output) does not return prose. It returns a list of short statements, and for each statement, which passage it relies on and a <strong>quote</strong>: words copied from that passage.</p>
+<pre><code class="language-text">DraftAnswer
+  answerable: true
+  statements:
+    - text: "The 90% confidence interval ... should be contained within 80.00-125.00%."
+      citations: [{passage: 1, quote: "the 90% confidence interval for the ratio of the test and
+                   reference products should be contained within the acceptance interval of 80.00- 125.00%"}]
+</code></pre>
+<p>Then code checks it, before anyone sees it:</p>
+<ol>
+<li><strong>The passage exists.</strong> A model cannot cite passage 9 when it was given eight.</li>
+<li><strong>The quote is in the passage.</strong> Character by character, in order.</li>
+<li><strong>Every number in the statement is in one of its quotes</strong>, compared by value.</li>
+</ol>
+<p>A statement that fails is removed. An answer with nothing left is withheld and labelled <em>not grounded</em>. An answer where the model itself said the passages do not cover the question is labelled <em>declined</em>. The user sees which happened.</p>
+<h2>The first verifier rejected the truth</h2>
+<p>The first run on my 60-question golden set: 89% of drafted statements verified, 28 quotes rejected. I assumed a misbehaving model. Then I read the rejections.</p>
+<p>Most were real quotes. The PDFs had stored the text in ways no human sees:</p>
+<ul>
+<li>Words split by the extractor: <em>"proce dure"</em>, <em>"doc uments"</em>.</li>
+<li>Hyphenation across line breaks: <em>"life-"</em> + <em>"threatening"</em>.</li>
+<li>Odd spacing inside numbers: <em>"80.00- 125.00%"</em> in the EMA guideline.</li>
+</ul>
+<p>The model, reasonably, had written the words as words. My check was comparing a cleaned human sentence with a dirty machine extraction and calling the human a liar.</p>
+<p>Verifier v2 normalises both sides (Unicode form, dashes, curly quotes, case), removes hyphens, and compares <strong>ignoring spaces</strong>. The characters must still appear in order, so a paraphrase still fails. Numbers compare by value: <code>80</code> equals <code>80.00</code>, <code>.025</code> equals <code>0.025</code>. I re-ran it on the <strong>identical drafts</strong>:</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Same 60 questions, same drafts</th><th>Verifier v1</th><th>Verifier v2</th></tr></thead>
+<tbody>
+<tr><td>Statements verified</td><td>0.891</td><td><strong>0.940</strong></td></tr>
+<tr><td>Quotes rejected</td><td>28</td><td><strong>15</strong></td></tr>
+<tr><td>Extra model calls</td><td>–</td><td><strong>0</strong></td></tr>
+</tbody>
+</table></div>
+<p>The biggest quality gain of the project came from a dozen lines of string handling.</p>
+<h2>Tell the model the test before it sits it</h2>
+<p>The remaining rejections were real misquotes, so the next step was the prompt. It now states the rules the verifier enforces: quote character for character; one unbroken stretch, with "..." where you leave words out; every number in a statement must be in one of <em>its own</em> quotes; if the sentence you quote refers to a number given elsewhere, cite that place too.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Change</th><th>Statements verified</th><th>Quotes rejected</th></tr></thead>
+<tbody>
+<tr><td>Prompt v1, verifier v2</td><td>0.940</td><td>15</td></tr>
+<tr><td>Prompt v2: unbroken quotes; restated numbers cite their source</td><td>0.963</td><td>11</td></tr>
+<tr><td>Prompt v3 + footnote fix (below)</td><td>0.971</td><td>5</td></tr>
+<tr><td>Prompt v4: don't stretch a general rule</td><td><strong>0.980</strong></td><td><strong>2</strong></td></tr>
+</tbody>
+</table></div>
+<p>The rules never changed. The model just knew them.</p>
+<h2>The verifier is the best data-quality detector I have</h2>
+<p>Several rejections pointed at the corpus, not the model.</p>
+<p><strong>Footnotes inside sentences.</strong> FDA guidances put footnotes at the bottom of the page, and the extractor put them right where the page broke, so a sentence ending <em>"…usually 80.00"</em> on one page and continuing <em>"percent to 125.00 percent…"</em> on the next had a footnote wedged in the middle (simplified here). No model can quote that sentence faithfully. The chunker now separates each page's footnotes, re-joins a sentence broken by a page boundary, and appends the footnotes after it. Rejected quotes fell from 11 to 5, and retrieval improved as a side effect.</p>
+<p><strong>Equations as Ethiopic script.</strong> The knowledge base kept retrieving "passages" made of Tamil, Syriac and Ethiopic letters. They were equations from the FDA statistics guidance, set in math fonts that the extractor mapped to random scripts. Those runs now become a <code>[formula]</code> placeholder, and chunks that are mostly tables or formulas are dropped.</p>
+<p>Each of these broke quote verification before it broke anything else. A check that demands exact text is a microscope on your data.</p>
+<h2>Numbers are where it matters most</h2>
+<p>The number check is the one I'd keep if I could keep only one. In the prompt-injection evaluation (Part 6), one attack planted a passage claiming a "70–130%" bioequivalence range. The statement repeating it was dropped, not by a security filter, but because no retrieved passage contained 70 or 130. A grounding check turned out to be a security control too.</p>
+<h2>What it doesn't catch</h2>
+<p>Question na-06 asked whether EU GMP Annex 11 sets validation requirements for machine learning models. The passages contained Annex 11's scope: it "applies to all forms of computerised systems used as part of GMP regulated activities". The writer concluded that Annex 11 therefore applies to machine learning models.</p>
+<p>Every quote was verbatim. Every number checked out. The verifier passed it. The conclusion was the model's, not the guidance's, because the guidance never mentions machine learning. A string check cannot see the gap between a true quote and a false inference. That needed a different tool, and Part 3 is about it.</p>
+<blockquote>
+<p><strong>Takeaways</strong></p>
+<ul>
+<li>Make citations a contract the code checks, not a courtesy the model offers. Quotes verbatim, numbers by value.</li>
+<li>When a strict check fails, read the failures before blaming the model. Mine were mostly the PDF.</li>
+<li>Change one thing at a time on identical inputs: re-verifying the same drafts showed the gain was the verifier, not luck.</li>
+<li>Tell the model exactly what will be checked.</li>
+<li>Verification catches misquotes and wrong numbers. It does not catch wrong reasoning.</li>
+</ul>
+</blockquote>
+<p>In <a href="part2-the-benchmark-winner-that-lost.html">Part 2</a>: how the passages are found, and the retrieval setting that won my benchmark and lost on answers.</p>
+<hr />
+<p><em>RegIntel is open source: <a href="https://github.com/munyaradzi-zhou/RegIntel">github.com/munyaradzi-zhou/RegIntel</a>. It answers from public FDA, ICH and EMA guidance, CDISC terminology and openFDA FAERS data, and is a demonstration, not medical or regulatory advice. Case study: <a href="../../work/regintel.html">RegIntel</a>.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="../../work/regintel.html">&larr; RegIntel case study</a>
+        <a href="part2-the-benchmark-winner-that-lost.html">Part 2: The benchmark winner that lost &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

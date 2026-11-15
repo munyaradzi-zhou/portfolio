@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The benchmark winner that lost &mdash; RegIntel &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="I compared Azure AI Search&#x27;s built-in chunking with my own section-aware chunks on the same PDFs, with the same embeddings, planner and ranker. Mine won on every metric and kept the section…">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>The benchmark winner that lost</h1>
+        <p class="meta">RegIntel: answers you can check · Part 2 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — I compared Azure AI Search's built-in chunking with my own section-aware chunks on the same PDFs, with the same embeddings, planner and ranker. Mine won on every metric and kept the section numbers a regulatory citation needs: chunking mattered more than the pipeline. Then I tuned agentic retrieval's reasoning effort. <code>minimal</code> won my retrieval benchmark outright, and lost when I scored the answers. Benchmark what the user sees.</p>
+</blockquote>
+<hr />
+<p><a href="part1-a-citation-is-a-contract.html">Part 1</a> was about checking answers. This part is about what they're built from: the passages.</p>
+<h2>A regulatory citation is a section, not a file</h2>
+<p>"EMA Guideline on the Investigation of Bioequivalence, §4.1.8, pp.14–15" is a citation a regulatory affairs person can use. "bioequivalence.pdf" is not. If the section number is going to appear in the answer, it has to exist before retrieval, so it has to come from chunking.</p>
+<p>Regulators number their documents differently: FDA uses Roman numerals and letters (<code>III.A.1</code>), ICH uses decimals (<code>4.1.1</code>) and letter-decimals (<code>A.2</code>), the EMA's pharmacovigilance module uses paths (<code>VI.B.7</code>), and FDA Q&amp;A guidances use <code>Q4</code>. One heading parser now recognises all six styles and nests them into a section path, and a chunk never crosses a section boundary. Each chunk carries its locator, its pages, and a one-line header naming its document:</p>
+<pre><code class="language-text">[EMA · CPMP/EWP/QWP/1401/98 Rev. 1 · 2010-01-20] Guideline on the Investigation of
+Bioequivalence — section 4.1.8 Evaluation
+</code></pre>
+<p>The header is embedded and keyword-indexed, so a passage always says whose rule it is. That was LegalMind's hardest lesson (<em>right number, wrong document</em>), applied from the start this time. The header is <strong>not</strong> part of the text quotes are verified against. The result was 1,869 chunks.</p>
+<h2>Azure can chunk for you. Should it?</h2>
+<p>Azure AI Search's new <strong>agentic retrieval</strong> offers a Blob knowledge source. You point it at a container of PDFs and it generates the whole pipeline: data source, skillset, index, indexer, chunking and embeddings. It's tempting. So I built both and compared them, holding everything else equal: <code>text-embedding-3-large</code>, the same <code>gpt-5-mini</code> planner, the same semantic ranker, effort <code>low</code>, and 42 questions.</p>
+<div class="table-scroll"><table>
+<thead><tr><th></th><th>Section hit@1</th><th>Section hit@5</th><th>Comparisons: both documents found</th><th>Reasoning tokens per query</th></tr></thead>
+<tbody>
+<tr><td>Azure integrated chunks</td><td>0.619*</td><td>0.857*</td><td>0.600</td><td>46K</td></tr>
+<tr><td><strong>Section chunks</strong></td><td><strong>0.738</strong></td><td><strong>0.952</strong></td><td><strong>0.800</strong></td><td><strong>36K</strong></td></tr>
+</tbody>
+</table></div>
+<p>* <em>Approximate. Azure's chunks have no section field at all, so I had to infer their section by word overlap with mine.</em> That footnote is the real finding: with integrated chunking an answer can cite the PDF, but not §4.1.8. And it cost more tokens.</p>
+<h2>What agentic retrieval actually does</h2>
+<p>A <strong>knowledge base</strong> puts an LLM in front of search. You send the question. The planner writes sub-queries, each runs as hybrid search (BM25 plus vectors, fused with Reciprocal Rank Fusion) with semantic re-ranking, and you get back passages and an activity log. Here is a real call, "Compare FDA and EMA acceptance limits for average bioequivalence":</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Step</th><th>What happened</th></tr></thead>
+<tbody>
+<tr><td>Query planning</td><td><code>gpt-5-mini</code>: 964 tokens in, 106 out, 1.8 s; three sub-queries</td></tr>
+<tr><td>Search ×3</td><td>50 candidates each from the section index</td></tr>
+<tr><td>Ranking</td><td>55,557 reasoning tokens (billed by the search service)</td></tr>
+<tr><td>Top 3</td><td>FDA statistical BE guidance · <strong>EMA §4.1.8</strong> · FDA ANDA BE guidance</td></tr>
+</tbody>
+</table></div>
+<p>The planner split the comparison by regulator, as the knowledge base's instructions ask. That decomposition is the selling point: a comparison sent as one query tends to let one half fill every result slot.</p>
+<h2>The knob: reasoning effort</h2>
+<p>Each retrieval can set how hard the planner works. I measured three settings on two question sets: single and comparison questions (does the best section come first?) and ten multi-part questions (is <em>every</em> supporting passage in the top five?).</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Effort</th><th>Section hit@1 (42 questions)</th><th>All passages found (10 multi-part)</th><th>Seconds per query</th></tr></thead>
+<tbody>
+<tr><td><code>minimal</code> (no planner)</td><td><strong>0.833</strong></td><td>0.5</td><td><strong>0.8</strong></td></tr>
+<tr><td><code>low</code></td><td>0.762</td><td>0.7</td><td>3.0</td></tr>
+<tr><td><code>medium</code></td><td>0.714</td><td><strong>0.9</strong></td><td>10.7</td></tr>
+<tr><td>Local hybrid, for reference</td><td>0.808</td><td>0.4</td><td>0.03</td></tr>
+</tbody>
+</table></div>
+<p>The columns disagree. On a precise single-document lookup the planner adds noise: it invented section numbers and added <code>site:fda.gov</code> to queries. It also costs seconds. On a question whose answer lives in three places, the planner is what finds the other two. So I'd route by question shape: <code>medium</code> for multi-part questions, and for single questions the obvious winner, <code>minimal</code>, which was the best and ten times faster.</p>
+<h2>The winner that lost</h2>
+<p>Then I scored <strong>answers</strong>, end to end, on all 70 questions, not just retrieval:</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Single questions at…</th><th>Fact recall</th><th>Unanswerables declined</th><th>Expected source cited</th><th>s / answer</th></tr></thead>
+<tbody>
+<tr><td><code>medium</code> everywhere</td><td>0.929</td><td>8 / 8</td><td>0.981</td><td>~18</td></tr>
+<tr><td><code>minimal</code></td><td>0.846</td><td>6 / 8</td><td>0.962</td><td>9.2</td></tr>
+<tr><td><strong><code>low</code></strong></td><td><strong>0.933</strong></td><td><strong>8 / 8</strong></td><td><strong>0.981</strong></td><td><strong>11.5</strong></td></tr>
+</tbody>
+</table></div>
+<p><code>minimal</code> put the best section first more often, but a complete answer needs the passages <em>around</em> the best one: the condition two paragraphs later, the exception in the next section. <code>minimal</code> ranked those lower, so answers lost facts. Worse, two of the eight unanswerable questions were answered instead of declined.</p>
+<p><code>low</code> matched <code>medium</code>'s quality and was about 35% faster. That's what RegIntel runs.</p>
+<h2>The web made it worse</h2>
+<p>One more experiment. The Web knowledge source searches Bing, restricted here to fda.gov, ema.europa.eu, ich.org, ecfr.gov and the European Commission's health site. It found newer guidance my frozen corpus lacked. Mixed into the answering knowledge base, it made retrieval worse: section hit@5 fell from 0.942 to 0.885, and it made 48 Bing calls over 52 questions, despite an instruction to use the web only when the indexed guidance didn't cover the question. Web results are LLM-written summaries, never verbatim, so they can never pass the quote verifier.</p>
+<p>The web now has its own knowledge base. It runs only after a decline, and it returns up to three regulator pages labelled <em>"may help, not verified"</em>. It never supplies a citation.</p>
+<blockquote>
+<p><strong>Takeaways</strong></p>
+<ul>
+<li>Chunking is a design decision. It beat the managed pipeline on every metric and decided whether citations could name a section.</li>
+<li>Agentic retrieval earns its cost on multi-part questions and hurts precise lookups. Route by question shape.</li>
+<li><strong>Benchmark the output the user sees.</strong> The retrieval winner lost on answers.</li>
+<li>More sources are not more evidence. Text you can't verify belongs in a pointer, not a citation.</li>
+</ul>
+</blockquote>
+<p>In <a href="part3-perfect-quotes-wrong-conclusion.html">Part 3</a>: the answer with perfect quotes and a false conclusion, and the second model that catches it.</p>
+<hr />
+<p><em>RegIntel is open source: <a href="https://github.com/munyaradzi-zhou/RegIntel">github.com/munyaradzi-zhou/RegIntel</a>. It answers from public FDA, ICH and EMA guidance, CDISC terminology and openFDA FAERS data, and is a demonstration, not medical or regulatory advice. Case study: <a href="../../work/regintel.html">RegIntel</a>.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part1-a-citation-is-a-contract.html">&larr; Part 1: A citation is a contract, not a courtesy</a>
+        <a href="part3-perfect-quotes-wrong-conclusion.html">Part 3: Perfect quotes, wrong conclusion &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RegIntel — case study — Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="Regulatory Q&amp;A for biopharma on Azure: agentic retrieval over FDA, ICH and EMA guidance, quotes and numbers verified in code, a reviewer from a different model family, and FAERS and CDISC answered from data.">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="RegIntel — case study">
+  <meta property="og:description" content="Regulatory answers you can check: every quote and number verified in code, 8/8 trap questions declined, deployed and evaluated live on Azure.">
+  <meta property="og:image" content="https://munyaradzi-zhou.github.io/portfolio/assets/og-card.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../css/variables.css">
+  <link rel="stylesheet" href="../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../index.html">Home</a></li>
+        <li><a href="../projects.html">Projects</a></li>
+        <li><a href="../blogs.html">Blog</a></li>
+        <li><a href="../cv.html">CV</a></li>
+      </ul>
+      <img src="../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+
+  <main class="container">
+    <section class="hero">
+      <span class="eyebrow">Case study · Azure AI Search · Agent Framework</span>
+      <h1>RegIntel</h1>
+      <p class="case-lead">Regulatory question answering for biopharma. It answers from 23 FDA, ICH and EMA guidances, CDISC terminology and FDA adverse-event data, and shows the exact sentence behind every claim. A model writes the answer; code decides whether you see it.</p>
+      <div class="chips"><span class="tag">Azure AI Search agentic retrieval</span><span class="tag">Azure OpenAI</span><span class="tag">AI Foundry</span><span class="tag">Microsoft Agent Framework</span><span class="tag">FastAPI</span><span class="tag">DuckDB</span><span class="tag">Container Apps</span><span class="tag">Cosmos DB</span><span class="tag">Bicep</span><span class="tag">GitHub Actions OIDC</span><span class="tag">Application Insights</span><span class="tag">MCP</span></div>
+      <div class="actions"><a class="button" href="https://github.com/munyaradzi-zhou/RegIntel" target="_blank" rel="noopener">View on GitHub</a><a class="button button--quiet" href="../blog/regintel/part1-a-citation-is-a-contract.html">Read the 5-part series</a></div>
+      <div class="proof"><div class="proof__item"><span class="proof__num">0.89→0.98</span><span class="proof__label">of drafted statements verified in code, as the verifier and prompt improved</span></div><div class="proof__item"><span class="proof__num">8 / 8</span><span class="proof__label">trap questions declined in every run, locally and live on Azure</span></div><div class="proof__item"><span class="proof__num">15→0</span><span class="proof__label">failed requests out of 70, after the live evaluation found a blocked event loop</span></div></div>
+    </section>
+
+    <article class="case">
+
+      <h2>The problem</h2>
+      <p>People in clinical development, pharmacovigilance and regulatory affairs ask precise questions: what acceptance range
+      applies to a bioequivalence study, how fast a fatal unexpected reaction must be reported, which CDISC codelist holds
+      a value. In this domain a confident wrong answer is worse than none, and a citation makes a wrong number <em>more</em>
+      convincing. So the bar is that every claim can be checked, and that the system declines when the guidance doesn't answer.</p>
+
+      <h2>How it works</h2>
+      <p>A router (one structured-output call) sends each question to the cheapest path that can answer it. Guidance questions
+      go to Azure AI Search <strong>knowledge bases</strong> (agentic retrieval). A planner splits multi-part questions into
+      sub-queries over 1,869 section-aware chunks, and each chunk carries its section locator and a header naming its document.
+      Questions that need data go to a <strong>Microsoft Agent Framework</strong> agent, with exact CDISC lookups and FAERS
+      disproportionality computed in DuckDB.</p>
+      <p>Every path ends at the same checks. The writer (<code>gpt-5-mini</code>) returns statements with verbatim quotes.
+      A <strong>verifier in Python</strong> removes any statement whose quote isn't in its passage or whose numbers aren't in
+      its quotes. A <strong>reviewer from a different model family</strong> (<code>gpt-oss-120b</code>) removes statements that
+      go beyond their quotes. Answers are labelled grounded, partially grounded, withheld or declined.</p>
+      <figure>
+        <img src="../assets/regintel/ask-answer.png" alt="RegIntel answering a FAERS safety-signal question about dupilumab and conjunctivitis, with every number quoted from the computed record" loading="lazy">
+        <figcaption>The deployed UI answering a FAERS question through the research agent: each statement cites the computed record, and each source shows the verbatim quote it rests on.</figcaption>
+      </figure>
+      <figure>
+        <img src="../assets/regintel/architecture.png" alt="RegIntel architecture diagram" loading="lazy">
+        <figcaption>Router, retrieval pipeline and research agent, all ending in the same verifier and reviewer, on Azure.</figcaption>
+      </figure>
+      <p>It runs on Azure Container Apps, with infrastructure in Bicep and every Azure call made through a managed identity;
+      the only secrets are the API's client keys, generated straight into Key Vault. GitHub Actions deploys over OIDC with an
+      identity that can update two apps and nothing else: about two minutes from a green CI run to a smoke-tested release.</p>
+
+      <h2>Results</h2>
+      <table>
+        <thead><tr><th>Measured</th><th>Result</th></tr></thead>
+        <tbody>
+          <tr><td>Live on Azure: answerable questions answered / unanswerable declined (70 questions over HTTPS)</td><td><strong>58 / 62 · 8 / 8</strong></td></tr>
+          <tr><td>Live: expected facts in answers · expected source cited</td><td><strong>0.91 · 48 / 52</strong></td></tr>
+          <tr><td>Live: data questions answered from FAERS and CDISC tools</td><td><strong>10 / 10</strong></td></tr>
+          <tr><td>Live latency p50 / p95</td><td><strong>12.3 s / 21.8 s</strong></td></tr>
+          <tr><td>Section chunks vs Azure's integrated chunking: right section first</td><td><strong>0.74 vs 0.62</strong></td></tr>
+          <tr><td>Multi-part questions with every supporting passage retrieved (planner at medium vs local hybrid)</td><td><strong>9 / 10 vs 4 / 10</strong></td></tr>
+          <tr><td>Reviewer calibration: planted problems caught · good statements rejected</td><td><strong>8 / 8 · 0 / 13</strong></td></tr>
+          <tr><td>Prompt-injection attacks that succeeded (the one was data poisoning)</td><td><strong>1 / 13</strong></td></tr>
+        </tbody>
+      </table>
+      <figure>
+        <img src="../assets/regintel/safety-signals.png" alt="FAERS safety signals: reports per reaction and reporting odds ratios with confidence intervals" loading="lazy">
+        <figcaption>Safety signals from FAERS, computed in DuckDB: reporting odds ratios with 95% confidence intervals on a log scale.</figcaption>
+      </figure>
+
+      <h2>What I learned</h2>
+      <div class="lessons"><div class="lesson"><span class="lesson__num">01</span><div><h3>Benchmark what the user sees</h3><p>Minimal planning effort won the retrieval benchmark and lost on answers. Fact recall fell from 0.93 to 0.85, and two trap questions were answered.</p></div></div><div class="lesson"><span class="lesson__num">02</span><div><h3>Verification and judgement are different tools</h3><p>An answer with perfect quotes reached a false conclusion. A calibrated reviewer caught it, and then found "should" becoming "must".</p></div></div><div class="lesson"><span class="lesson__num">03</span><div><h3>Evaluate the deployed system</h3><p>185 green tests missed a blocked event loop that restarted the container. Seventy real questions found it in minutes.</p></div></div></div>
+    </article>
+
+    <div class="post-nav">
+      <a href="../projects.html">&larr; All projects</a>
+      <a href="legalmind.html">LegalMind AI &rarr;</a>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../js/main.js"></script>
+</body>
+</html>

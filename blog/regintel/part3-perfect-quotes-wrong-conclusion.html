@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Perfect quotes, wrong conclusion &mdash; RegIntel &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="An answer passed every check in Part 1: real quotes, matching numbers. And it was wrong, because the conclusion went beyond what the quotes said. I added a reviewer from a different model family that…">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Perfect quotes, wrong conclusion</h1>
+        <p class="meta">RegIntel: answers you can check · Part 3 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — An answer passed every check in Part 1: real quotes, matching numbers. And it was wrong, because the conclusion went beyond what the quotes said. I added a reviewer from a different model family that sees only each statement and its quotes. I tested it on planted problems before trusting it (8/8 caught, 0/13 false alarms). It then found a failure I hadn't known to look for: "should" quietly becoming "must". It also declined good answers until I stopped letting it decide alone. The model proposes; code confirms.</p>
+</blockquote>
+<hr />
+<h2>The answer that passed</h2>
+<p>Golden question na-06 is a trap on purpose: <em>"Which validation requirements does EU GMP Annex 11 set for machine learning models?"</em> Annex 11 is in the corpus. Machine learning is not mentioned in it.</p>
+<p>The retrieved passages included Annex 11's scope, which says it applies to all forms of computerised systems used as part of GMP regulated activities. The writer answered that Annex 11 therefore applies to machine learning models, with validation requirements, citing the scope sentence word for word.</p>
+<p>The quote was verbatim and there were no numbers to check. The verifier from <a href="part1-a-citation-is-a-contract.html">Part 1</a> passed it. A reader would see a confident, cited, <em>grounded</em> answer to a question the guidance does not answer.</p>
+<p>The error isn't in the statement or in the quote. It's in the <strong>step between them</strong>: "applies to all computerised systems" became "covers machine learning models". That's a reasonable inference, perhaps even a correct one. But it's the model's, not the regulator's, and in this domain that difference is the whole point.</p>
+<h2>A second model, with a narrow question</h2>
+<p>String matching can't judge an inference, so a model has to. That raises the obvious objection: why trust one model to check another? My answer was to make the reviewer's job as narrow as possible, and to measure it before using it.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Design choice</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><strong>A different model family</strong>: <code>gpt-oss-120b</code> (open-weight) reviewing <code>gpt-5-mini</code></td><td>A judge from the writer's own family tends to share its blind spots and like its style</td></tr>
+<tr><td>It sees only the question, each verified statement, and that statement's quotes</td><td>Not the full passages, and not the writer's reasoning. One question only: <em>does this statement say what these quotes say?</em></td></tr>
+<tr><td>A structured verdict per statement: <em>supported</em>, <em>overreach</em> or <em>unsupported</em>, with a one-sentence reason</td><td>Anything but <em>supported</em> is removed, like a failed quote, and the reason is kept for the UI and the evaluation</td></tr>
+<tr><td>A question-level check: does any quote name the question's specific subject?</td><td>Catches answers that only offer general rules for a specific question</td></tr>
+</tbody>
+</table></div>
+<p>(The plan was <code>o4-mini</code>. Azure refused new deployments of it, and every newer model had zero quota on my free-trial subscription. <code>gpt-oss-120b</code> on an AI Services account was the strongest separation available, and arguably a better one.)</p>
+<h2>Test the judge before you trust it</h2>
+<p>I wrote 21 statements over 12 questions and labelled them by hand. There were 13 good statements, some heavily reworded, plus 8 planted problems: the real na-06 case, "should" rewritten as "must", a list of alternatives narrowed to one, a scope the quote never gave.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Calibration set</th><th>Result</th></tr></thead>
+<tbody>
+<tr><td>Planted problems caught</td><td><strong>8 / 8</strong></td></tr>
+<tr><td>Good statements wrongly rejected</td><td><strong>0 / 13</strong></td></tr>
+<tr><td>Added time per answer</td><td>~2.2 s</td></tr>
+</tbody>
+</table></div>
+<p>Without this step I'd have had a reviewer and a feeling. With it, I had a number I could re-check whenever the prompt or the model changed.</p>
+<h2>What it found that I didn't know to look for</h2>
+<p>On the real answers to all 60 golden questions, the reviewer removed 15 statements as overreach. Reading the reasons, a pattern appeared that I'd never planted, because I hadn't noticed it:</p>
+<blockquote>
+<p><em>"Quote uses 'should', statement changes to mandatory 'must'."</em></p>
+<p><em>"Quote lists MABEL, PAD or NOAEL as options; stating it should be related to NOAEL alone exceeds the guidance."</em></p>
+</blockquote>
+<p><strong>Modal inflation.</strong> FDA guidance says "should" because guidance is not binding. Every page carries the header <em>Contains Nonbinding Recommendations</em>. The writer kept turning recommendations into requirements and options into rules. Every quote was real, so the verifier was blind to it. To a regulatory reader it's the difference between what you may do and what you must do.</p>
+<p>Prompt v5 added one paragraph telling the writer to keep the source's force: "should" stays "should", alternatives stay alternatives, don't narrow or widen who a rule applies to. Overreach removals fell from 15 to 9.</p>
+<h2>The judge that declined good answers</h2>
+<p>The first version of the question-level check had a cost. It declined <strong>three answerable questions</strong> by saying "the guidance does not address &lt;subject&gt;" when it did. The answer rate fell from 100% to 94%.</p>
+<p>The fix was to stop letting the model have the last word. The reviewer still <em>proposes</em> a missing subject. Code then <em>confirms</em> it: the answer is declined only if no retrieved passage contains every content word of that subject (compared on word stems, so plurals and hyphenation match). If the subject is there, the reviewer was wrong, and the answer stands.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>60 golden questions</th><th>Prompt v4 + reviewer</th><th>Prompt v5 + reviewer + code check</th></tr></thead>
+<tbody>
+<tr><td>Answerable questions answered</td><td>0.942</td><td><strong>1.000</strong></td></tr>
+<tr><td>Unanswerable questions declined</td><td>8 / 8</td><td><strong>8 / 8</strong></td></tr>
+<tr><td>Statements removed as overreach</td><td>15</td><td><strong>9</strong></td></tr>
+<tr><td>False declines</td><td>3</td><td><strong>0</strong></td></tr>
+</tbody>
+</table></div>
+<p>And na-06? In the final run the writer declines it by itself. Prompt v4 added a rule, learned from this very question, against stretching a general rule to a subject the passages never mention: <em>"The provided Annex 11 passages do not mention 'machine learning' or 'models' or any terminology specific to ML… they only address computerised systems in general."</em> The reviewer is the second line of defence for when it doesn't.</p>
+<h2>The price of caution</h2>
+<p>Fact recall moved from 0.904 to 0.897 with the reviewer on. Removing statements occasionally removes a fact. On a 60-question set that's within the noise of one question, and for a system whose premise is that a confident wrong answer is worse than none, I'll take that trade every time. The reviewer runs on every answer path, and costs nothing when there's nothing to show.</p>
+<blockquote>
+<p><strong>Takeaways</strong></p>
+<ul>
+<li>Verification and judgement are different tools. Exact checks catch misquotes; only judgement catches a false inference from true quotes.</li>
+<li>Make the judge's question narrow, and use a different model family from the writer.</li>
+<li><strong>Calibrate the judge</strong> on hand-labelled cases, including traps, before trusting it, and re-check it when anything changes.</li>
+<li>Read the judge's reasons. Mine found a failure (modal inflation) I hadn't thought to test for.</li>
+<li><strong>Let the model propose and code confirm</strong> wherever a cheap deterministic check exists.</li>
+</ul>
+</blockquote>
+<p>In <a href="part4-an-agent-is-a-cost.html">Part 4</a>: the questions guidance can't answer, the agent that can, and why it doesn't answer everything.</p>
+<hr />
+<p><em>RegIntel is open source: <a href="https://github.com/munyaradzi-zhou/RegIntel">github.com/munyaradzi-zhou/RegIntel</a>. It answers from public FDA, ICH and EMA guidance, CDISC terminology and openFDA FAERS data, and is a demonstration, not medical or regulatory advice. Case study: <a href="../../work/regintel.html">RegIntel</a>.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part2-the-benchmark-winner-that-lost.html">&larr; Part 2: The benchmark winner that lost</a>
+        <a href="part4-an-agent-is-a-cost.html">Part 4: An agent is a cost, not a feature &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

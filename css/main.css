@@ -859,3 +859,12 @@ blockquote p:last-child {
     flex-direction: column;
   }
 }
+
+/* Wide tables in posts scroll sideways on small screens instead of widening the page */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.table-scroll table {
+  min-width: 100%;
+}

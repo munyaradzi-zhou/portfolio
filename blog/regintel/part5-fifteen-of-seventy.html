@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>15 of 70: the bug only Azure could show me &mdash; RegIntel &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="RegIntel was deployed on Azure Container Apps, with every unit test and the smoke test green. Then I sent it the 70 evaluation questions over HTTPS, one at a time, and 15 failed with &quot;service is…">
+  <link rel="icon" href="../../assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>15 of 70: the bug only Azure could show me</h1>
+        <p class="meta">RegIntel: answers you can check · Part 5 of 5</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — RegIntel was deployed on Azure Container Apps, with every unit test and the smoke test green. Then I sent it the 70 evaluation questions over HTTPS, one at a time, and 15 failed with "service is starting". Each question was blocking the server's event loop for about 16 seconds; the health probes timed out and Azure restarted the container mid-run. Two small changes took it to 0 out of 70, and the median latency fell by a quarter. Then the first continuous-deployment run failed three times for three unrelated reasons. The lesson both times: <strong>the real platform is part of the system under test.</strong></p>
+</blockquote>
+<hr />
+<h2>Green everywhere</h2>
+<p>By the evening of the deployment, RegIntel had:</p>
+<ul>
+<li>185 unit tests at over 85% coverage, plus strict types, lint, security scans and a full-history secret scan in CI.</li>
+<li>Infrastructure in Bicep: managed identity everywhere, keys only in Key Vault, Cosmos DB for sessions.</li>
+<li>A deployed API and UI, and a smoke test that passed: health 200, ready 200, 401 without a key, one correct cited answer.</li>
+</ul>
+<p>The local evaluation numbers were good. The question I hadn't answered was whether the <em>deployed</em> system gives the same answers, and how fast. So I wrote a live evaluation: the 60 golden questions and 10 tool questions, sent over HTTPS one at a time, exactly as a client would, scored with the same rules as the local runs, with latency measured at the client.</p>
+<h2>15 out of 70</h2>
+<p>It came back with 55 good answers, close to the local quality, and <strong>15 HTTP 503s</strong>: <em>"The answering service is starting."</em></p>
+<p>That message comes from one place in the code: a request that arrives before the service has finished building at start-up. But the service had been running for an hour. The 503s came in two blocks of fast failures (0.3–0.6 s each), separated by long runs of normal answers. It looked like the container was restarting, twice, in the middle of the run.</p>
+<h2>What the platform saw</h2>
+<p>The answer wasn't in my application logs. It was in the platform's system log, in the environment's Log Analytics workspace:</p>
+<pre><code class="language-text">Readiness probe failed: Get "http://100.100.0.213:8000/readyz": context deadline exceeded
+  (Client.Timeout exceeded while awaiting headers)
+Liveness probe failed: Get "http://100.100.0.213:8000/healthz": context deadline exceeded
+Liveness probe failed: ...
+Liveness probe failed: ...
+Container api failed liveness probe, will be restarted
+</code></pre>
+<p><code>/healthz</code> returns <code>{"status": "ok"}</code>. It does nothing. Why would it time out?</p>
+<p>Because it <strong>couldn't run</strong>. FastAPI serves <code>async</code> routes on a single event loop. My <code>/v1/ask</code> route was <code>async</code>, but the code inside it was synchronous: OpenAI SDK calls, Azure AI Search calls, the Cosmos DB save. While one question took 16 seconds, those calls held the loop, and nothing else ran, including the health endpoint. Azure's probes use a <strong>1-second timeout</strong> by default. After three liveness failures in a row, the platform did exactly what it should with a process that doesn't answer: it restarted it. Requests during the restart met the "starting" path.</p>
+<p>The bug was mine, not Azure's. But only Azure could show it to me.</p>
+<h2>The fix</h2>
+<p>Two changes:</p>
+<pre><code class="language-python"># before: blocks the event loop for the whole model call
+decision, usage = self.router.route(question)
+
+# after: runs in a worker thread; the loop stays free for probes and other requests
+decision, usage = await asyncio.to_thread(self.router.route, question)
+</code></pre>
+<p>The same change went in for every blocking step: both pipelines, the web lookup, the follow-up rewrite, the session save, and the agent's writer and reviewer. The probe timeouts also went from 1 s to 5 s. That's not a fix on its own, but a margin.</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Live evaluation, 70 questions over HTTPS</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+<tr><td>HTTP errors</td><td>15 / 70</td><td><strong>0 / 70</strong></td></tr>
+<tr><td>Answerable questions answered</td><td>46 / 47 reached</td><td><strong>58 / 62</strong></td></tr>
+<tr><td>Unanswerable questions declined</td><td>8 / 8</td><td><strong>8 / 8</strong></td></tr>
+<tr><td>Expected facts in answers</td><td>73 / 78</td><td><strong>96 / 105</strong></td></tr>
+<tr><td>Latency p50 / p95</td><td>16.3 / 27.0 s</td><td><strong>12.3 / 21.8 s</strong></td></tr>
+</tbody>
+</table></div>
+<p>The median latency also dropped by a quarter. I can't fully separate that from model-latency variance between the two runs, an hour apart, but probes and telemetry no longer queueing behind a blocked answer is a plausible part of it. The four answerable misses each failed <em>closed</em>, with a decline or a withheld answer, never an unsupported one.</p>
+<h2>Why the tests didn't catch it</h2>
+<p>The unit tests call the API one request at a time, with fakes for every model. There are no concurrent health checks and no platform that kills slow processes. Everything the bug needed (real latency, a probe with a timeout, a supervisor that restarts) existed only in Azure. The smoke test passed too, because one request at a time is exactly what it sends.</p>
+<p>The live evaluation is now part of a release, not just of a write-up.</p>
+<h2>Deploying without a secret, at the fourth attempt</h2>
+<p>Then I pushed the code to GitHub and turned on continuous deployment. A workflow builds the images after CI passes, rolls out new revisions and runs the smoke test. It signs in to Azure with <strong>OIDC</strong>: GitHub issues the run a signed token naming the repository and branch, Entra ID trusts that exact subject on one managed identity, and no Azure secret is stored in GitHub at all. The identity can push images, update two apps and read one key, and nothing else.</p>
+<p>The first run failed. So did the second and the third:</p>
+<div class="table-scroll"><table>
+<thead><tr><th>Run</th><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>AADSTS700213: No matching federated identity record found for presented assertion subject 'repo:munyaradzi-zhou@58000286/RegIntel@1458192955:ref:refs/heads/main'</code></td><td>New GitHub repositories send <em>immutable numeric ids</em> in the subject, not <code>repo:owner/name</code></td><td>The deploy script looks the ids up with <code>gh api</code></td></tr>
+<tr><td>2</td><td><code>The resource with name 'crreginteldevp3nx5' … could not be found in subscription</code></td><td><em>AcrPush</em> lets you push images but not read the registry resource, which <code>az acr login</code> does first</td><td><em>Reader</em> on the registry</td></tr>
+<tr><td>3</td><td><code>smoke_test.sh: Permission denied</code></td><td>Scripts committed from Windows had no executable bit</td><td><code>git update-index --chmod=+x</code></td></tr>
+<tr><td>4</td><td>—</td><td></td><td><strong>Green: CI 1 min 18 s, deploy 2 min 1 s</strong></td></tr>
+</tbody>
+</table></div>
+<p>One thing worked first time, because I'd seen it coming. The apps live in another project's Container Apps environment: a free trial allows one per subscription. Updating an app re-checks a <code>join</code> permission on its environment, so the deploy identity has a custom role holding exactly that one action, on that one environment.</p>
+<p>None of the three failures was visible by reading the YAML. Each took a minute to fix once it was visible.</p>
+<blockquote>
+<p><strong>Takeaways</strong></p>
+<ul>
+<li>In an <code>async</code> server, blocking calls freeze everything, health checks included. Use async clients, or move the work off the loop.</li>
+<li><strong>Evaluate the deployed system.</strong> Real traffic on the real platform found what 185 tests and a smoke test couldn't.</li>
+<li>Know where each kind of log lives. The answer was in the platform's system log, not mine.</li>
+<li>The first run of a pipeline is a test of the pipeline. Plan for it to fail, and read the error: <code>AADSTS700213</code> prints the subject you need.</li>
+<li>Least privilege is a list you discover. AcrPush needed Reader; the borrowed environment needed <code>join</code>.</li>
+</ul>
+</blockquote>
+<p>In the <a href="epilogue-the-attack-that-wasnt-an-injection.html">epilogue</a>: thirteen attacks on a RAG system, and the one that got through without giving a single instruction.</p>
+<hr />
+<p><em>RegIntel is open source: <a href="https://github.com/munyaradzi-zhou/RegIntel">github.com/munyaradzi-zhou/RegIntel</a>. It answers from public FDA, ICH and EMA guidance, CDISC terminology and openFDA FAERS data, and is a demonstration, not medical or regulatory advice. Case study: <a href="../../work/regintel.html">RegIntel</a>.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part4-an-agent-is-a-cost.html">&larr; Part 4: An agent is a cost, not a feature</a>
+        <a href="epilogue-the-attack-that-wasnt-an-injection.html">Epilogue: The attack that wasn't an injection &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
