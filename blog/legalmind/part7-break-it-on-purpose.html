@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Break it on purpose &mdash; LegalMind on Azure &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="I wrote five alerts and a runbook, then broke the system on purpose to see whether they worked. All five alerts fired, and the drills found four problems: one alert could never have fired, and the run">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>Break it on purpose</h1>
+        <p class="meta">LegalMind on Azure · Part 7</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — I wrote five alerts and a runbook, then broke the system on purpose to see whether they worked. All five alerts fired, and the drills found four problems: one alert could never have fired, and the runbook's fix for a lost permission didn't fix anything. Then I put API Management in front of the model as an AI gateway, load-tested it up to 30 users and throttled the primary model region in the middle of it: 160 calls moved to the second region and users saw no errors. The semantic cache I expected to save money saved little and reused answers across different questions, so it's off. An answer costs under a cent; two thirds of the bill is the search service, whether anyone asks anything or not.</p>
+</blockquote>
+<hr />
+<p><a href="part6-the-gate-that-caught-what-i-would-have-shipped.html">Part 6</a> was about catching bad answers before they ship. This one is about knowing when the running system is in trouble, and what happens when it is.</p>
+<h2>Five alerts, and a drill for each</h2>
+<p>The alerts are in Bicep, next to everything else:</p>
+<table>
+<thead>
+<tr>
+<th>Alert</th>
+<th>Fires when</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>API 5xx rate</td>
+<td>more than 2% of requests fail in 5 minutes</td>
+</tr>
+<tr>
+<td>Chat latency</td>
+<td>p95 of answers above 20 s over 15 minutes</td>
+</tr>
+<tr>
+<td>Unverified answers</td>
+<td>more than 20% of answers in an hour couldn't be checked (the fail-closed label from Part 2)</td>
+</tr>
+<tr>
+<td>Model throttling</td>
+<td>Azure OpenAI answers 429</td>
+</tr>
+<tr>
+<td>Container restarts</td>
+<td>the API container restarts</td>
+</tr>
+</tbody>
+</table>
+<p>The third one is the interesting one. Uptime alerts tell you the system is down; this one tells you it's <strong>up and wrong</strong>: answering, but without the check that makes the answers trustworthy.</p>
+<p>A runbook says what to do for each. Then the drills, on dev, on purpose:</p>
+<ul>
+<li><strong>Throttle the model:</strong> its capacity cut from 30K to 1K tokens a minute. Throttling, latency and unverified-answer alerts all fired. Every answer during the drill was labelled <code>unverified</code>, not passed off as checked: the guard from Part 2 doing its job under stress.</li>
+<li><strong>Kill the process:</strong> the restart alert fired three and a half minutes later.</li>
+<li><strong>Remove a permission:</strong> the app's identity lost its role on the search index. Every search and chat failed; the 5xx alert fired seven minutes after the first error.</li>
+</ul>
+<h2>What the drills found</h2>
+<ol>
+<li><strong>The quality alert could never have fired.</strong> The grounding label was attached to an internal FastAPI span that never reaches the <code>requests</code> table the alert queries. It looked fine in the code and in every unit test. Fixed, with a test for where the attribute lands.</li>
+<li><strong>The runbook's fix didn't work.</strong> For a lost role it said "redeploy the infrastructure". I did, and nothing changed: the deploy script only re-applies the Bicep when <code>infra/</code> has changed in git, which is a good rule for fast releases and a bad one for repairing drift. A <code>--reapply-infra</code> option, also on the CD workflow, restored the role. Resolved 22 minutes after the first error, on the second attempt.</li>
+<li><strong>The alert that fired before the drill.</strong> Throttling fired three minutes before I'd throttled anything: an evaluation run (Part 6) was using the same model deployment as the app. A quality gate shouldn't be able to slow down users.</li>
+<li><strong>Restarts are hard to cause.</strong> A revision restart creates new replicas, not a restart; a <code>SIGKILL</code> to PID 1 from inside the container is ignored by the kernel. <code>SIGTERM</code> works. Now in the runbook.</li>
+</ol>
+<h2>An AI gateway</h2>
+<p>Finding 3 was the real lesson: one model deployment was the ceiling for everything. So API Management now sits between the app and Azure OpenAI:</p>
+<ul>
+<li><strong>Only the app may call it</strong> (its managed identity's token is checked); the gateway calls the models with its own identity.</li>
+<li><strong>Per-user token limits</strong>: one user, or one runaway agent loop, can't use everyone's capacity. The app tells the gateway who each call is for.</li>
+<li><strong>Token metrics per user</strong> in Application Insights.</li>
+<li><strong>Failover</strong>: a pool with the primary region (East US 2) first and a second account in France Central behind it. A circuit breaker takes a throttled or failing backend out of the pool, and a retry sends the call to the next one.</li>
+<li>Evaluations got <strong>their own deployment</strong>, so finding 3 can't happen again.</li>
+</ul>
+<p>The existing API Management instance couldn't do any of this: the Consumption tier supports neither token limits nor circuit breakers, and can't be upgraded in place. The new instance is the Developer tier, at about €1.50 a day. Production would use Standard v2.</p>
+<h2>The load test</h2>
+<p>Locust, simulated lawyers asking questions from the golden set, ramped in stages:</p>
+<table>
+<thead>
+<tr>
+<th>users</th>
+<th>answers/min</th>
+<th>p50</th>
+<th>p95</th>
+<th>errors</th>
+<th>API replicas</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2</td>
+<td>7</td>
+<td>7.4 s</td>
+<td>14.9 s</td>
+<td>0%</td>
+<td>1</td>
+</tr>
+<tr>
+<td>5</td>
+<td>20</td>
+<td>7.2 s</td>
+<td>9.6 s</td>
+<td>0%</td>
+<td>1</td>
+</tr>
+<tr>
+<td>10</td>
+<td>32</td>
+<td>7.6 s</td>
+<td>18.3 s</td>
+<td>0%</td>
+<td>1</td>
+</tr>
+<tr>
+<td>20</td>
+<td>29</td>
+<td>29.0 s</td>
+<td>53.5 s</td>
+<td>0%</td>
+<td>1 → 2</td>
+</tr>
+<tr>
+<td>30</td>
+<td>29</td>
+<td>54.0 s</td>
+<td>86.8 s</td>
+<td>0%</td>
+<td>2 → 3</td>
+</tr>
+</tbody>
+</table>
+<p><strong>No errors at any stage, and a ceiling at about 30 answers a minute</strong>: after that, more users only wait longer. The API's CPU stayed low. The ceiling is the models: an answer makes about five model calls, roughly 15K tokens, and 30 answers a minute is the combined capacity of both regions. Adding replicas wouldn't help; adding model capacity would, and on Global Standard reserving capacity costs nothing until it's used.</p>
+<p>I did tune one thing. The circuit breaker took a backend out for a full minute after a single 429, so both regions were often out at once (511 calls got a 503 from the gateway, which the app's retries absorbed). Three failures in ten seconds, out for ten seconds, made <strong>no measurable difference</strong>: when both regions are full, it doesn't matter which one you wait for.</p>
+<h2>Taking a region down</h2>
+<p>The drill: cut East US 2's capacity to 1K tokens a minute and run the load.</p>
+<p>The first attempt measured nothing: all 199 calls succeeded on East US 2. <strong>A capacity change takes about six minutes to be enforced.</strong> The second time, a probe waited for the first 429 before the load started. Then:</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>calls</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>East US 2: answered / throttled</td>
+<td>9 / 22</td>
+</tr>
+<tr>
+<td>France Central: answered</td>
+<td><strong>160</strong></td>
+</tr>
+<tr>
+<td>Answers to users</td>
+<td>36, <strong>0 errors</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Losing the primary region didn't reach users. The price was latency: p95 went from about 9 s to 37 s, for the calls that hit the throttled region first and waited for the retry.</p>
+<p>The gateway has its own failure mode, too: the Developer tier, one unit and no SLA, was unreachable for about eight minutes that same day. That's the trade you make for €1.50 a day.</p>
+<h2>The cache that didn't pay</h2>
+<p>The gateway can also cache: a semantic cache in Redis that answers a model call from a stored one when the prompt is similar enough. I partitioned it by what the caller may see (Part 6), so a cached answer can never reach someone without access to its sources. Then I measured: twenty questions, asked twice.</p>
+<ul>
+<li>On the exact repeat, <strong>18%</strong> of model calls came from the cache, and answers weren't faster.</li>
+<li>On the <em>first</em> pass, <strong>7%</strong> came from the cache too, before any question had been asked twice: similar-looking prompts from different questions were treated as the same.</li>
+</ul>
+<p>Most of LegalMind's model calls carry eight retrieved passages and the agent's tool steps, so they rarely match. The ones that do are what you'd least want reused. Redis costs €1–2 a day. <strong>Off.</strong></p>
+<h2>The other outage</h2>
+<p>One more failure, not on purpose. On the morning of the load test, every search and chat on dev started answering 500. The logs: <em>"Free Query Semantic Usage exceeded for the month."</em> The semantic ranker's free plan allows 1,000 queries a month, and three weeks of evaluations had used them. Every search asked for the ranker, so every search failed. Search now falls back to plain hybrid search for an hour at a time when that happens. (The evaluation gate later measured what the ranker is worth: top-3 retrieval dropped from 0.88 to 0.75 without it.)</p>
+<h2>What it costs</h2>
+<p>From Cost Management and the token counts of 657 real answers:</p>
+<ul>
+<li><strong>Dev at rest: €2.33 a day</strong>, about €70 a month. <strong>Two thirds of it is AI Search</strong> (Basic), billed per hour whether anyone asks anything or not. The gateway adds about €1.50 a day.</li>
+<li><strong>An answer: about €0.0085</strong>: 3.3 model calls, 10,100 input and 490 output tokens (most of it the retrieved passages), plus the safety checks. At 1,000 answers a day that's €8, still less than the fixed costs.</li>
+</ul>
+<blockquote>
+<p><strong>Takeaways</strong></p>
+<ul>
+<li>Break it on purpose. Two of the four findings were things that looked right in code: an alert that couldn't fire, and a runbook step that didn't repair anything.</li>
+<li>Alert on quality, not just uptime: "up and wrong" is the failure a legal assistant can't afford.</li>
+<li>Know your real ceiling before adding replicas: here it was model capacity, which is free to raise.</li>
+<li>In a drill, prove the fault is in place before you measure the response.</li>
+<li>Measure the optimisation before you keep it. The cache's best case was 18%, and its worst case was reusing an answer across questions.</li>
+<li>Look at where the money goes at rest. Per-answer costs were the small part.</li>
+</ul>
+</blockquote>
+<hr />
+<p><em>LegalMind AI is open source: <a href="https://github.com/munyaradzi-zhou/LegalMind-AI">github.com/munyaradzi-zhou/LegalMind-AI</a>, including the <a href="https://github.com/munyaradzi-zhou/LegalMind-AI/blob/main/docs/runbook.md">runbook</a>, the <a href="https://github.com/munyaradzi-zhou/LegalMind-AI/blob/main/docs/load-test-2026-11-21.md">load test report</a> and the <a href="https://github.com/munyaradzi-zhou/LegalMind-AI/blob/main/docs/costs.md">costs</a>. The sample organisation and documents are fictional; LegalMind is a demonstration, not legal advice.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="part6-the-gate-that-caught-what-i-would-have-shipped.html">&larr; Part 6: The gate that caught what I would have shipped</a>
+        <a href="../../blogs.html">All posts &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>

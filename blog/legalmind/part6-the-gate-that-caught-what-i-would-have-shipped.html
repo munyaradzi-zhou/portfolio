@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>The gate that caught what I would have shipped &mdash; LegalMind on Azure &mdash; Munyaradzi Comfort Zhou</title>
+  <meta name="description" content="I added three things a legal assistant needs before anyone trusts it: an evaluation gate on every pull request, document-level access control, and live Dutch law. The access control held: 340 searches">
+  <link rel="stylesheet" href="../../css/variables.css">
+  <link rel="stylesheet" href="../../css/main.css">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="../../index.html" class="nav-brand">MCZ</a>
+      <button class="nav-toggle" aria-label="Toggle navigation">
+        <span></span><span></span><span></span>
+      </button>
+      <ul class="nav-links">
+        <li><a href="../../index.html">Home</a></li>
+        <li><a href="../../projects.html">Projects</a></li>
+        <li><a href="../../blogs.html">Blog</a></li>
+        <li><a href="../../cv.html">CV</a></li>
+      </ul>
+      <img src="../../assets/profile.jpeg" alt="Munyaradzi Comfort Zhou" class="nav-photo">
+    </div>
+  </nav>
+  <main class="container">
+    <article>
+      <div class="post-header">
+        <h1>The gate that caught what I would have shipped</h1>
+        <p class="meta">LegalMind on Azure · Part 6</p>
+      </div>
+      <div class="post-content">
+<blockquote>
+<p><strong>TL;DR</strong> — I added three things a legal assistant needs before anyone trusts it: an evaluation gate on every pull request, document-level access control, and live Dutch law. The access control held: 340 searches by five test users, zero leaked passages. The live-law tools worked: eight of eight answers cited the official text. And then the gate caught something none of my unit tests could: the research agent had found a real, anonymised court ruling and presented it as a named client's own case. The answer was labelled <em>grounded</em>, because the ruling really did say what the answer said.</p>
+</blockquote>
+<hr />
+<p><a href="../../blogs.html">Parts 1 to 5</a> ended with numbers measured once, by hand, on one evening. That's a snapshot, not a safeguard: the next prompt change could undo any of it, and I'd find out from a user.</p>
+<h2>A gate that runs the evaluation on every change</h2>
+<p>The evaluation suite already existed. What was missing was running it <strong>every time something changes</strong>, and comparing with what we had.</p>
+<p>So the golden sets grew: 68 retrieval questions with the passage that answers them, and 66 questions for end-to-end answers, 14 of them <em>unanswerable</em>, including the near-misses from Part 4 whose answer exists in the documents but for someone else. A GitHub workflow starts the branch's API against the dev environment, runs both suites (about 25 minutes, so only on pull requests labelled <code>run-eval</code>), and compares each metric with a baseline recorded from <code>main</code>.</p>
+<p>Each metric has a tolerance. Fact recall may wobble by a couple of points between runs; the LLM judge's groundedness score is too noisy to gate on at all, so it's reported, not gated. One row has <strong>no tolerance</strong>: <em>unanswerable questions declined or flagged</em>. Answering one confidently, without a warning, is never acceptable, however good the average is.</p>
+<h2>Who may see this passage?</h2>
+<p>A law firm's documents aren't one pool. A lawyer may see the files of the matters she works on, paralegals may not see privileged documents, and everyone may see public law. A retrieval-augmented assistant has to enforce that <strong>in retrieval</strong>: once a passage is in the model's context, it can surface in the answer, a citation or an excerpt.</p>
+<p>Every chunk in the index now carries the groups allowed to see it. Users sign in with Entra ID; their token carries their roles (Lawyer, Paralegal, Admin) and their matter groups; and the search engine adds a filter to <strong>every</strong> query, failing closed when it can't determine who's asking. The alternative, Azure AI Search's built-in document-level permissions, is in preview, and it trims on user and group IDs only, while "paralegals don't see privileged documents" is a rule about a <em>role</em>. A security boundary shouldn't rest on preview behaviour, so I built the filter and wrote down why in <a href="https://github.com/munyaradzi-zhou/LegalMind-AI/blob/main/docs/adr/0001-document-level-security-trimming.md">ADR 0001</a>.</p>
+<p>Then I tried to break it: five test users (three lawyers on three different matters, a paralegal on the matter with a privileged case summary, and a guest on no matter at all) ran <strong>340 searches</strong> across all matters and roles. <strong>Zero</strong> passages leaked. And 41 questions from an outsider produced <strong>zero</strong> citations of documents they couldn't see. The demo that convinced me, though, was simpler: the same user, the same question, before and after being added to a matter. The answer changed.</p>
+<h2>Live law</h2>
+<p>Uploaded copies of legislation go stale. So the research agent got tools for the official sources:</p>
+<ul>
+<li><strong><code>get_article("BW", "7:271")</code></strong> finds the version of Burgerlijk Wetboek Book 7 that is valid today through the government's search service, downloads its XML once, and returns the article per paragraph with the date its wording took effect.</li>
+<li><strong><code>search_case_law</code></strong> and <strong><code>get_ruling</code></strong> use rechtspraak.nl's open data. Its API filters by court, area of law and date, but has <strong>no full-text search</strong>, so the tool fetches up to a thousand recent rulings for the filters and ranks their official summaries itself.</li>
+</ul>
+<p>Each result gets the next source number after the retrieved passages, <code>[9]</code>, <code>[10]</code>, is cited with its identifier and a link, and goes through the same groundedness check as everything else.</p>
+<p>The first live answer came back labelled <code>not_grounded</code>. The groundedness check read only the first 8,000 characters of context, and eight retrieved passages already filled them: the live article sat after the cut-off, invisible to the judge. Live sources now come first, and the limit is 24,000. After that: <strong>8 of 8</strong> live-law questions cited the official source, named the article or ECLI, contained the expected facts and were labelled grounded.</p>
+<h2>The catch</h2>
+<p>Then the gate ran on the pull request. Retrieval: fine. Facts: fine. One row was red:</p>
+<table>
+<thead>
+<tr>
+<th>metric</th>
+<th>main</th>
+<th>this PR</th>
+<th></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Unanswerable: declined or flagged</td>
+<td>1.000</td>
+<td>0.929</td>
+<td><strong>FAIL</strong></td>
+</tr>
+</tbody>
+</table>
+<p>One question out of fourteen:</p>
+<blockquote>
+<p><em>"Welke billijke vergoeding heeft de kantonrechter aan Eva Kramer toegekend?"</em> — What fair compensation did the cantonal judge award Eva Kramer?</p>
+</blockquote>
+<p>Eva Kramer is a client in the case files. Her employment dispute has a draft settlement agreement, not yet signed. <strong>No judge has ruled on it.</strong> Before live law, LegalMind's answer was flagged <code>not_grounded</code>, which counts as safe. Now it said:</p>
+<blockquote>
+<p><em>"De kantonrechter heeft aan Eva Kramer een billijke vergoeding toegekend van € 4.000,- bruto. Dit blijkt uit de uitspraak van de Rechtbank Rotterdam (ECLI:NL:RBROT:2025:1815) …"</em></p>
+</blockquote>
+<p>That ruling is real. It is about an unjustified summary dismissal, and it awards €4,000. It is also <strong>anonymised</strong>, like every published Dutch ruling: it names no employee. The agent had searched for case law, found a ruling that matched the facts it knew about Kramer, and stitched the two together. The groundedness check saw a claim, "€4,000 fair compensation", and a source that supports it, and said <em>grounded</em>.</p>
+<p>Every individual step was correct. The tool returned a real ruling, the citation was real, and the check verified a claim that really is in its source. The error was in the link between them, and only a question written to have no answer could expose it.</p>
+<p>The fix was small: every ruling the tools return now starts with <em>"Geanonimiseerde uitspraak: the parties are not named. Not the case of anyone in the user's documents unless those documents cite this ECLI,"</em> and the research prompt says to call a similar case a precedent. The next gate run: <strong>14 of 14</strong>.</p>
+<h2>Reading a red gate</h2>
+<p>Not every red row is a regression, and a gate is only useful if you read it:</p>
+<ul>
+<li>On an earlier pull request the same row failed on a different question. The answer there was fine; the judge's definition of "declined" was too narrow. I fixed the definition, not the app.</li>
+<li>On this one, two retrieval rows were red as well. That wasn't the change at all: the semantic ranker's free monthly quota had run out that morning (it also took search down on dev for a while: Part 7), and the baseline had been measured with it.</li>
+<li>And one honest admission: the pull request was merged before the gate finished. The fix went out as the next one. A gate that isn't a required check is advice.</li>
+</ul>
+<blockquote>
+<p><strong>Takeaways</strong></p>
+<ul>
+<li>Run the evaluation on every change that can move it, and compare with a baseline, not with your memory.</li>
+<li>Give "never acceptable" metrics zero tolerance; gate noisy ones loosely or not at all.</li>
+<li>Enforce access in retrieval, and test it like an attacker: many users, every matter, count the leaks.</li>
+<li>A grounded answer can still be wrong: every step can be right and the link between them invented. Only test questions that <em>should</em> fail will show it.</li>
+<li>Read a red gate row by row. Make the gate required, or it's advice.</li>
+</ul>
+</blockquote>
+<p>In <a href="part7-break-it-on-purpose.html">Part 7</a>: breaking it on purpose: alerts, a gateway, a load test, and what all of it costs.</p>
+<hr />
+<p><em>LegalMind AI is open source: <a href="https://github.com/munyaradzi-zhou/LegalMind-AI">github.com/munyaradzi-zhou/LegalMind-AI</a>. The sample organisation, its clients and documents are fictional; the court ruling quoted is a real, anonymised public ruling. LegalMind is a demonstration, not legal advice.</em></p>
+      </div>
+      <div class="post-nav">
+        <a href="epilogue-mcp.html">&larr; Epilogue: When the user is another AI</a>
+        <a href="part7-break-it-on-purpose.html">Part 7: Break it on purpose &rarr;</a>
+      </div>
+    </article>
+  </main>
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Munyaradzi Comfort Zhou. Built with intention.</p>
+    </div>
+  </footer>
+  <script src="../../js/main.js"></script>
+</body>
+</html>
