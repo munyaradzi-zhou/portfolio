@@ -90,6 +90,7 @@
           <tr><td>Section chunks vs Azure's integrated chunking: right section first</td><td><strong>0.74 vs 0.62</strong></td></tr>
           <tr><td>Multi-part questions with every supporting passage retrieved (planner at medium vs local hybrid)</td><td><strong>9 / 10 vs 4 / 10</strong></td></tr>
           <tr><td>Reviewer calibration: planted problems caught · good statements rejected</td><td><strong>8 / 8 · 0 / 13</strong></td></tr>
+          <tr><td>Trained router (TF-IDF + logistic regression, MLflow) vs the LLM router, on held-out real questions</td><td><strong>0.83 vs 0.96</strong></td></tr>
           <tr><td>Audit trail, live: concurrent answers recorded without forking the chain · a hand-edited record detected</td><td><strong>4 / 4 · seq 3 of 5</strong></td></tr>
           <tr><td>Prompt-injection attacks that succeeded (the one was data poisoning)</td><td><strong>1 / 13</strong></td></tr>
         </tbody>
