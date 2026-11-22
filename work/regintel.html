@@ -60,6 +60,10 @@
       A <strong>verifier in Python</strong> removes any statement whose quote isn't in its passage or whose numbers aren't in
       its quotes. A <strong>reviewer from a different model family</strong> (<code>gpt-oss-120b</code>) removes statements that
       go beyond their quotes. Answers are labelled grounded, partially grounded, withheld or declined.</p>
+      <p>Every answer is written to a <strong>GxP-style audit trail</strong> before it is released: who asked, each source
+      with its checksum, the models and prompt versions, the model's raw draft and every verification decision. Records are
+      hash-chained in Cosmos DB, so a hand edit is reported at the exact record, and any answer can be replayed through the
+      verifier with the same decisions. A small validation pack traces each requirement to the tests that prove it.</p>
       <figure>
         <img src="../assets/regintel/ask-answer.png" alt="RegIntel answering a FAERS safety-signal question about dupilumab and conjunctivitis, with every number quoted from the computed record" loading="lazy">
         <figcaption>The deployed UI answering a FAERS question through the research agent: each statement cites the computed record, and each source shows the verbatim quote it rests on.</figcaption>
@@ -86,6 +90,7 @@
           <tr><td>Section chunks vs Azure's integrated chunking: right section first</td><td><strong>0.74 vs 0.62</strong></td></tr>
           <tr><td>Multi-part questions with every supporting passage retrieved (planner at medium vs local hybrid)</td><td><strong>9 / 10 vs 4 / 10</strong></td></tr>
           <tr><td>Reviewer calibration: planted problems caught · good statements rejected</td><td><strong>8 / 8 · 0 / 13</strong></td></tr>
+          <tr><td>Audit trail, live: concurrent answers recorded without forking the chain · a hand-edited record detected</td><td><strong>4 / 4 · seq 3 of 5</strong></td></tr>
           <tr><td>Prompt-injection attacks that succeeded (the one was data poisoning)</td><td><strong>1 / 13</strong></td></tr>
         </tbody>
       </table>
